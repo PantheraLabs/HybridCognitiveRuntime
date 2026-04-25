@@ -1,0 +1,84 @@
+{
+  "name": "hcr-resume",
+  "displayName": "HCR Resume",
+  "description": "Resume development sessions without re-explaining context",
+  "version": "0.1.0",
+  "publisher": "pantheralabs",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "cognitive",
+    "state",
+    "context",
+    "resume",
+    "ai"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "hcr.resume",
+        "title": "HCR: Resume Session",
+        "category": "HCR"
+      },
+      {
+        "command": "hcr.showState",
+        "title": "HCR: Show Current State",
+        "category": "HCR"
+      },
+      {
+        "command": "hcr.clearState",
+        "title": "HCR: Clear Session State",
+        "category": "HCR"
+      }
+    ],
+    "configuration": {
+      "title": "HCR Resume",
+      "properties": {
+        "hcr.autoResume": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically resume session on window focus after idle time"
+        },
+        "hcr.idleThreshold": {
+          "type": "number",
+          "default": 30,
+          "description": "Minutes of idle time before triggering auto-resume"
+        },
+        "hcr.outputFormat": {
+          "type": "string",
+          "enum": ["text", "json"],
+          "default": "text",
+          "description": "Output format for session resume"
+        }
+      }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "hcr.sessionView",
+          "name": "HCR Session",
+          "when": "hcr.hasState"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "16.x",
+    "typescript": "^4.9.4"
+  }
+}

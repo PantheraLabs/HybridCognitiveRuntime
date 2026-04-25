@@ -1,0 +1,186 @@
+{
+  "analysis": {
+    "current_task": "Testing: initial hcr core, docs, examples, and te",
+    "progress_percent": 45,
+    "next_action": "Review 13 new file(s)",
+    "confidence": 0.75,
+    "uncertainty": 0.25,
+    "relevant_facts": [
+      "branch:main",
+      "last_commit:Initial HCR core, docs, examples, and tests\n\nProje",
+      "has_uncommitted_changes",
+      "modified_files:0",
+      "primary_language:Python",
+      "recent_file_changes:20",
+      "active_dir:product\\cli",
+      "active_dir:product",
+      "active_dir:product\\hco_wrappers",
+      "active_dir:product\\storage"
+    ],
+    "detected_effects": [
+      "derived:task_in_progress",
+      "derived:deduced_from:if has_uncommitted_changes then task_in_progress"
+    ],
+    "gap_minutes": null,
+    "project_path": "C:\\Users\\rishi\\Documents\\GitHub\\HybridCognitiveRuntime"
+  },
+  "git_state": {
+    "is_git_repo": true,
+    "branch": "main",
+    "last_commit": {
+      "hash": "aa68077",
+      "message": "Initial HCR core, docs, examples, and tests\n\nProject initialization: add core Hybrid Cognitive Runtime implementation, documentation, examples, and tests. Updates README with architecture and quick-start. Add docs (architecture.md, dev_log.md, project_memory.md, tasks.md). Add examples/simple_reasoning.py and examples package. Implement product utilities for developer context (hco_wrappers, state_capture with GitTracker/FileWatcher, storage persistence). Add src package with core hco_engine, operator implementations, and state dataclasses plus unit tests (tests/*.py). This commit establishes the initial project structure, HCO primitives (neural/symbolic/causal operators, policy selector), persistence, and example workflows for further development.",
+      "time": "2026-04-25T16:06:38",
+      "author": "Rishi Praseeth Krishnan"
+    },
+    "uncommitted_changes": {
+      "modified_count": 0,
+      "staged_count": 0,
+      "untracked_count": 13,
+      "modified_files": [],
+      "staged_files": [],
+      "has_changes": true
+    },
+    "recent_commits": [
+      {
+        "hash": "aa68077",
+        "message": "Initial HCR core, docs, examples, and tests",
+        "time_ago": "47 seconds ago"
+      },
+      {
+        "hash": "557be55",
+        "message": "Initial commit",
+        "time_ago": "20 minutes ago"
+      }
+    ],
+    "captured_at": "2026-04-25T16:07:25.557671"
+  },
+  "file_state": {
+    "recent_files": [
+      {
+        "path": "product\\cli\\__init__.py",
+        "modified_at": "2026-04-25T16:06:45.901435",
+        "size_bytes": 88
+      },
+      {
+        "path": "product\\__init__.py",
+        "modified_at": "2026-04-25T16:06:45.404362",
+        "size_bytes": 62
+      },
+      {
+        "path": "product\\cli\\resume.py",
+        "modified_at": "2026-04-25T16:06:44.587982",
+        "size_bytes": 6927
+      },
+      {
+        "path": "product\\hco_wrappers\\__init__.py",
+        "modified_at": "2026-04-25T16:06:17.378669",
+        "size_bytes": 148
+      },
+      {
+        "path": "product\\storage\\__init__.py",
+        "modified_at": "2026-04-25T16:06:16.973264",
+        "size_bytes": 145
+      },
+      {
+        "path": "product\\state_capture\\__init__.py",
+        "modified_at": "2026-04-25T16:06:16.601860",
+        "size_bytes": 142
+      },
+      {
+        "path": "product\\hco_wrappers\\dev_context_ops.py",
+        "modified_at": "2026-04-25T16:06:16.492350",
+        "size_bytes": 12111
+      },
+      {
+        "path": "product\\state_capture\\file_watcher.py",
+        "modified_at": "2026-04-25T16:05:37.574364",
+        "size_bytes": 5380
+      },
+      {
+        "path": "product\\state_capture\\git_tracker.py",
+        "modified_at": "2026-04-25T16:05:28.014146",
+        "size_bytes": 4787
+      },
+      {
+        "path": "product\\storage\\state_persistence.py",
+        "modified_at": "2026-04-25T16:05:21.566729",
+        "size_bytes": 3646
+      },
+      {
+        "path": "README.md",
+        "modified_at": "2026-04-25T16:02:24.611097",
+        "size_bytes": 4198
+      },
+      {
+        "path": "docs\\dev_log.md",
+        "modified_at": "2026-04-25T16:01:48.668901",
+        "size_bytes": 2401
+      },
+      {
+        "path": "tests\\__init__.py",
+        "modified_at": "2026-04-25T15:55:09.138518",
+        "size_bytes": 49
+      },
+      {
+        "path": "tests\\test_engine.py",
+        "modified_at": "2026-04-25T15:55:08.806958",
+        "size_bytes": 2102
+      },
+      {
+        "path": "tests\\test_operators.py",
+        "modified_at": "2026-04-25T15:55:05.388377",
+        "size_bytes": 3630
+      },
+      {
+        "path": "tests\\test_state.py",
+        "modified_at": "2026-04-25T15:54:59.212861",
+        "size_bytes": 3286
+      },
+      {
+        "path": "src\\core\\__init__.py",
+        "modified_at": "2026-04-25T15:54:53.738413",
+        "size_bytes": 120
+      },
+      {
+        "path": "src\\operators\\__init__.py",
+        "modified_at": "2026-04-25T15:54:53.314914",
+        "size_bytes": 671
+      },
+      {
+        "path": "src\\state\\__init__.py",
+        "modified_at": "2026-04-25T15:54:52.075423",
+        "size_bytes": 275
+      },
+      {
+        "path": "src\\__init__.py",
+        "modified_at": "2026-04-25T15:54:51.362039",
+        "size_bytes": 39
+      }
+    ],
+    "file_count": 20,
+    "extensions": {
+      ".py": 18,
+      ".md": 2
+    },
+    "primary_language": "Python",
+    "active_directories": {
+      "product\\cli": 2,
+      "product": 1,
+      "product\\hco_wrappers": 2,
+      "product\\storage": 2,
+      "product\\state_capture": 3,
+      "root": 1,
+      "docs": 1,
+      "tests": 4,
+      "src\\core": 1,
+      "src\\operators": 1,
+      "src\\state": 1,
+      "src": 1
+    },
+    "captured_at": "2026-04-25T16:07:25.559198"
+  },
+  "captured_at": "",
+  "saved_at": "2026-04-25T16:07:25.560768",
+  "project_path": "C:\\Users\\rishi\\Documents\\GitHub\\HybridCognitiveRuntime"
+}
