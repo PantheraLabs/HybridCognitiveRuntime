@@ -1,188 +1,105 @@
 {
-  "analysis": {
-    "current_task": "Testing: initial hcr core, docs, examples, and te",
-    "progress_percent": 45,
-    "next_action": "Commit 1 modified file(s)",
-    "confidence": 0.75,
-    "uncertainty": 0.25,
-    "relevant_facts": [
-      "branch:main",
-      "last_commit:Initial HCR core, docs, examples, and tests\n\nProje",
-      "has_uncommitted_changes",
-      "modified_files:1",
-      "primary_language:Python",
-      "recent_file_changes:20",
-      "active_dir:docs",
-      "active_dir:product",
-      "active_dir:product\\vscode-extension",
-      "active_dir:product\\vscode-extension\\src"
+  "saved_at": "2026-04-25T16:41:43.064597",
+  "project_path": "C:\\Users\\rishi\\Documents\\GitHub\\HybridCognitiveRuntime",
+  "cognitive_state": {
+    "latent": [
+      0.004925586140154924,
+      0.0038560758766323193,
+      0.014423545882393925,
+      -0.022618323242067837,
+      -0.012559335321620369,
+      0.0015523721471621468,
+      -0.005106333975479307,
+      0.021436587300527277,
+      0.006578950683459298,
+      0.010498803215147673,
+      0.0019236723126148216,
+      -0.00716658752263344,
+      0.024734559201236746,
+      0.00787001655501624,
+      0.004669600782982,
+      0.004838835749619674,
+      0.008714424946371998,
+      0.018536458731970552,
+      0.012019844791413279,
+      -0.022314135991530495,
+      -0.00046100791136089586,
+      -0.0022772277719152268,
+      -0.006252333433113884,
+      -0.020742057975489073,
+      0.033090668440285465,
+      0.01154044606468109,
+      -0.004013986217785236,
+      0.002634322759468788,
+      0.027930064671904203,
+      0.001623427191461902,
+      0.01065965115397092,
+      0.006176049664117024,
+      -0.011596368815032648,
+      0.008101379892071036,
+      -0.0014224413885633625,
+      0.004826340498555607,
+      0.0053520146128436365,
+      0.0047507461624721695,
+      0.0034832487837360435,
+      0.02747646363435442,
+      0.03728545614862372,
+      -0.004815635714334676,
+      0.012970905891480134,
+      0.019292985374811916,
+      -0.002374946824279924,
+      -0.001946183578472589,
+      0.009313855711598096,
+      0.024963324162914885,
+      0.011542946792770915,
+      0.012401813319235675,
+      0.004667035187082029,
+      -0.0040376716849590145,
+      0.002693528473328105,
+      0.007496181471249138,
+      0.023332183552446924,
+      0.00042814052783350393,
+      -0.008384877181716915,
+      -0.0016643306398251047,
+      0.029410808340820736,
+      -0.006492621810568961,
+      -0.01612237744080979,
+      0.0004084456559794443,
+      -0.007205760566927661,
+      -0.0112977943264302
     ],
-    "detected_effects": [
-      "derived:task_in_progress",
-      "derived:deduced_from:if has_uncommitted_changes then task_in_progress"
-    ],
-    "gap_minutes": 2.2355495,
-    "project_path": "C:\\Users\\rishi\\Documents\\GitHub\\HybridCognitiveRuntime"
-  },
-  "git_state": {
-    "is_git_repo": true,
-    "branch": "main",
-    "last_commit": {
-      "hash": "aa68077",
-      "message": "Initial HCR core, docs, examples, and tests\n\nProject initialization: add core Hybrid Cognitive Runtime implementation, documentation, examples, and tests. Updates README with architecture and quick-start. Add docs (architecture.md, dev_log.md, project_memory.md, tasks.md). Add examples/simple_reasoning.py and examples package. Implement product utilities for developer context (hco_wrappers, state_capture with GitTracker/FileWatcher, storage persistence). Add src package with core hco_engine, operator implementations, and state dataclasses plus unit tests (tests/*.py). This commit establishes the initial project structure, HCO primitives (neural/symbolic/causal operators, policy selector), persistence, and example workflows for further development.",
-      "time": "2026-04-25T16:06:38",
-      "author": "Rishi Praseeth Krishnan"
-    },
-    "uncommitted_changes": {
-      "modified_count": 1,
-      "staged_count": 0,
-      "untracked_count": 19,
-      "modified_files": [
-        "docs/dev_log.md"
+    "symbolic": {
+      "facts": [
+        "branch:main",
+        "last_commit:Add 'Resume Without Re-Explaining' product\n\nIntrod",
+        "has_uncommitted_changes",
+        "modified_files:3",
+        "primary_language:Python",
+        "recent_file_changes:20",
+        "active_dir:product\\cli",
+        "active_dir:product",
+        "active_dir:docs",
+        "active_dir:product\\vscode-extension",
+        "pattern_detected:default"
       ],
-      "staged_files": [],
-      "has_changes": true
+      "rules": [],
+      "constraints": []
     },
-    "recent_commits": [
-      {
-        "hash": "aa68077",
-        "message": "Initial HCR core, docs, examples, and tests",
-        "time_ago": "3 minutes ago"
-      },
-      {
-        "hash": "557be55",
-        "message": "Initial commit",
-        "time_ago": "22 minutes ago"
-      }
-    ],
-    "captured_at": "2026-04-25T16:09:39.944653"
-  },
-  "file_state": {
-    "recent_files": [
-      {
-        "path": "docs\\dev_log.md",
-        "modified_at": "2026-04-25T16:09:25.419485",
-        "size_bytes": 4484
-      },
-      {
-        "path": "product\\PRODUCT_SPEC.md",
-        "modified_at": "2026-04-25T16:08:55.374517",
-        "size_bytes": 10989
-      },
-      {
-        "path": "product\\vscode-extension\\tsconfig.json",
-        "modified_at": "2026-04-25T16:08:13.912426",
-        "size_bytes": 236
-      },
-      {
-        "path": "product\\vscode-extension\\src\\extension.ts",
-        "modified_at": "2026-04-25T16:08:08.485624",
-        "size_bytes": 6803
-      },
-      {
-        "path": "product\\vscode-extension\\package.json",
-        "modified_at": "2026-04-25T16:07:54.938873",
-        "size_bytes": 1924
-      },
-      {
-        "path": "product\\cli\\__init__.py",
-        "modified_at": "2026-04-25T16:06:45.901435",
-        "size_bytes": 88
-      },
-      {
-        "path": "product\\__init__.py",
-        "modified_at": "2026-04-25T16:06:45.404362",
-        "size_bytes": 62
-      },
-      {
-        "path": "product\\cli\\resume.py",
-        "modified_at": "2026-04-25T16:06:44.587982",
-        "size_bytes": 6927
-      },
-      {
-        "path": "product\\hco_wrappers\\__init__.py",
-        "modified_at": "2026-04-25T16:06:17.378669",
-        "size_bytes": 148
-      },
-      {
-        "path": "product\\storage\\__init__.py",
-        "modified_at": "2026-04-25T16:06:16.973264",
-        "size_bytes": 145
-      },
-      {
-        "path": "product\\state_capture\\__init__.py",
-        "modified_at": "2026-04-25T16:06:16.601860",
-        "size_bytes": 142
-      },
-      {
-        "path": "product\\hco_wrappers\\dev_context_ops.py",
-        "modified_at": "2026-04-25T16:06:16.492350",
-        "size_bytes": 12111
-      },
-      {
-        "path": "product\\state_capture\\file_watcher.py",
-        "modified_at": "2026-04-25T16:05:37.574364",
-        "size_bytes": 5380
-      },
-      {
-        "path": "product\\state_capture\\git_tracker.py",
-        "modified_at": "2026-04-25T16:05:28.014146",
-        "size_bytes": 4787
-      },
-      {
-        "path": "product\\storage\\state_persistence.py",
-        "modified_at": "2026-04-25T16:05:21.566729",
-        "size_bytes": 3646
-      },
-      {
-        "path": "README.md",
-        "modified_at": "2026-04-25T16:02:24.611097",
-        "size_bytes": 4198
-      },
-      {
-        "path": "tests\\__init__.py",
-        "modified_at": "2026-04-25T15:55:09.138518",
-        "size_bytes": 49
-      },
-      {
-        "path": "tests\\test_engine.py",
-        "modified_at": "2026-04-25T15:55:08.806958",
-        "size_bytes": 2102
-      },
-      {
-        "path": "tests\\test_operators.py",
-        "modified_at": "2026-04-25T15:55:05.388377",
-        "size_bytes": 3630
-      },
-      {
-        "path": "tests\\test_state.py",
-        "modified_at": "2026-04-25T15:54:59.212861",
-        "size_bytes": 3286
-      }
-    ],
-    "file_count": 20,
-    "extensions": {
-      ".md": 3,
-      ".json": 2,
-      ".ts": 1,
-      ".py": 14
+    "causal": {
+      "dependencies": [
+        "deductive_reasoning",
+        "pattern_recognition:default",
+        "causal_prediction",
+        "deductive_reasoning",
+        "pattern_recognition:default",
+        "causal_prediction"
+      ],
+      "effects": []
     },
-    "primary_language": "Python",
-    "active_directories": {
-      "docs": 1,
-      "product": 2,
-      "product\\vscode-extension": 2,
-      "product\\vscode-extension\\src": 1,
-      "product\\cli": 2,
-      "product\\hco_wrappers": 2,
-      "product\\storage": 2,
-      "product\\state_capture": 3,
-      "root": 1,
-      "tests": 4
-    },
-    "captured_at": "2026-04-25T16:09:39.946293"
-  },
-  "captured_at": "",
-  "saved_at": "2026-04-25T16:09:39.946293",
-  "project_path": "C:\\Users\\rishi\\Documents\\GitHub\\HybridCognitiveRuntime"
+    "meta": {
+      "confidence": 0.75,
+      "uncertainty": 0.25,
+      "timestamp": "2026-04-25T16:41:43.063591"
+    }
+  }
 }
