@@ -127,6 +127,28 @@ Output: [Current Task] [Progress %] [Next Action]
 - **Fallback UI**: 3-option dialog when confidence < 0.4
 - **Auto-trigger**: Window focus after 30+ min idle
 
-## Future Entries
+## 2026-04-26 - Web Dashboard Restructure
 
-[Use this section to log decisions, issues, and technical debt as development progresses]
+### Changes Made
+- **Moved `src/web/` to `web/`** - Product/UX layer should not be inside core engine source
+- **Fixed dashboard loading issues:**
+  - Added proper error handling for engine connection failures
+  - Added status indicators (online/offline/loading)
+  - Added demo mode for testing without engine
+  - Improved Cytoscape graph rendering with COSE layout
+  - Added edge count display
+  - Better empty state handling
+
+### Tech Debt Cleared
+- `src/web/` was undocumented and misplaced - now at proper location
+
+## 2026-04-26 - Documentation Update
+
+### Changes Made
+- Updated `project_memory.md` to reflect current product development phase
+- Added Resume Without Re-Explaining feature status (80% complete)
+- Added Web Dashboard section with current location and features
+- Updated status from "Initialization" to "Product Development"
+
+### Context
+HCR shows uncommitted changes (3 files) and active work in product/ directory. Documentation now accurately reflects completed core engine and active product development.

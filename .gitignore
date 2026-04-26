@@ -36,3 +36,22 @@ ENV/
 .vscode/
 .idea/
 .DS_Store
+
+# Node.js
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+
+# Logs
+*.log
+
+# OS
+Thumbs.db

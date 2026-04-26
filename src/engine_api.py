@@ -24,6 +24,9 @@ from .causal.event_store import EventStore, CausalEvent
 from .causal.dependency_graph import DependencyGraph
 from .causal.impact_analyzer import ImpactAnalyzer
 from .causal.ast_extractor import extract_dependencies
+from .causal.workflow_predictor import WorkflowPredictor
+from .symbolic.friction_detector import FrictionDetector
+from .symbolic.profile_manager import ProfileManager
 
 
 # System prompts for engine-level LLM calls
@@ -110,10 +113,47 @@ class HCREngine:
         self._current_state: Optional[CognitiveState] = None
         self._last_saved: Optional[datetime] = None
         
-        # Initialize Causal Graph components (Phase 3)
+        # Initialize Causal Graph components (Phase 3 & 5)
         self.event_store = EventStore(str(self.hcr_dir))
         self.dependency_graph = DependencyGraph()
         self.impact_analyzer = ImpactAnalyzer(self.dependency_graph)
+        
+        self.profile_manager = ProfileManager(str(self.project_path))
+        self.friction_detector = FrictionDetector(self.event_store)
+        self.workflow_predictor = WorkflowPredictor(self.event_store)
+        self._replay_causal_events()
+
+    def _replay_causal_events(self):
+        """Replay events from EventStore to rebuild in-memory Causal Graph and Symbolic Facts"""
+        print(f"[HCR Engine] Replaying {len(self.event_store.events)} causal events...")
+        
+        # Ensure we have a state to populate
+        if not self._current_state:
+            self._current_state = CognitiveState()
+
+        for event in self.event_store.events:
+            # 1. Restore Symbolic Facts for continuity
+            if event.event_type == "file_edit":
+                fact = f"edited:{event.source}"
+            elif event.event_type == "terminal":
+                fact = f"cmd:{event.source}"
+            elif event.event_type == "git_commit":
+                fact = f"commit:{event.source}"
+            else:
+                fact = None
+
+            if fact and fact not in self._current_state.symbolic.facts:
+                self._current_state.symbolic.facts.append(fact)
+
+            # 2. Rebuild Dependency Graph (Python only)
+            if event.event_type == "file_edit":
+                file_path = event.source
+                abs_path = self.project_path / file_path
+                if abs_path.exists() and abs_path.suffix == '.py':
+                    deps = extract_dependencies(abs_path)
+                    all_deps = deps["imports"] + deps["calls"]
+                    if all_deps:
+                        self.dependency_graph.update_file_dependencies(file_path, all_deps)
 
     def _get_llm_provider(self):
         """Lazy-initialize the LLM provider"""
@@ -351,8 +391,8 @@ class HCREngine:
         if self._last_saved:
             gap = (datetime.now() - self._last_saved).total_seconds() / 60
 
-        # Get relevant facts
-        facts = self._current_state.symbolic.facts[:10]
+        # Get relevant facts (use the most recent ones for inference)
+        facts = self._current_state.symbolic.facts[-20:]
 
         # Try LLM-powered inference (with cache)
         llm = self._get_llm_provider()
@@ -454,6 +494,27 @@ class HCREngine:
                 if len(impacted_files) > 5:
                     lines.append(f"- ... and {len(impacted_files) - 5} more files.")
 
+        # Phase 5: Cognitive Twin Integration
+        profile_rules = self.profile_manager.get_context_injection()
+        if profile_rules:
+            lines.append("\n### Developer Profile (Strict Constraints):")
+            lines.extend(profile_rules)
+
+        friction_warnings = self.friction_detector.analyze_friction()
+        if friction_warnings:
+            lines.append("\n### Friction Warnings (DO NOT REPEAT MISTAKES):")
+            for warning in friction_warnings:
+                lines.append(f"- {warning}")
+
+        if recent_edits:
+            latest_edit = recent_edits[-1]
+            predictions = self.workflow_predictor.predict_next_files(latest_edit)
+            if predictions:
+                lines.append("\n### Workflow Anticipation:")
+                lines.append(f"Based on Markov transition probabilities from `{latest_edit}`, the user is highly likely to edit these next:")
+                for p_file, prob in predictions:
+                    lines.append(f"- {p_file} ({prob*100:.0f}% probability)")
+
         lines.append(f"\n### Session Meta:")
         lines.append(f"- Confidence: {self._current_state.meta.confidence:.2f}")
         lines.append(f"- Uncertainty: {self._current_state.meta.uncertainty:.2f}")
@@ -465,7 +526,8 @@ class HCREngine:
 
     def _extract_task(self) -> str:
         """Extract current task from state facts (heuristic fallback)"""
-        for fact in self._current_state.symbolic.facts:
+        # Scan in reverse to find the most RECENT task
+        for fact in reversed(self._current_state.symbolic.facts):
             if "task:" in fact:
                 return fact.replace("task:", "").replace("_", " ")
             if "commit:" in fact:
@@ -480,18 +542,18 @@ class HCREngine:
     def _calculate_progress(self) -> int:
         """Calculate progress percentage (heuristic fallback)"""
         score = 50
-
         facts = self._current_state.symbolic.facts
 
-        # Check for completion indicators
-        if any("commit:" in f for f in facts):
-            score += 10
-        if any("test" in f.lower() for f in facts):
+        # Check for completion indicators (scan recent facts)
+        recent_facts = facts[-20:]
+        if any("commit:" in f for f in recent_facts):
+            score += 20
+        if any("test" in f.lower() for f in recent_facts):
             score += 10
 
         # Check for file activity
-        edited_count = sum(1 for f in facts if "edited:" in f)
-        if edited_count > 5:
+        edited_count = sum(1 for f in recent_facts if "edited:" in f)
+        if edited_count > 3:
             score += 10
 
         return max(10, min(90, score))
@@ -503,16 +565,13 @@ class HCREngine:
             if "predicted:" in effect:
                 return effect.replace("predicted:", "")
 
-        # Default suggestions based on state
-        facts = self._current_state.symbolic.facts
+        # Default suggestions based on recent state
+        facts = self._current_state.symbolic.facts[-20:]
 
         if any("edited:" in f for f in facts) and not any("commit:" in f for f in facts):
-            return "Commit your changes"
+            return "Commit your Phase 5 changes"
 
-        if any("commit:" in f for f in facts):
-            return "Continue with next feature"
-
-        return "Continue working"
+        return "Continue working on the Cognitive Twin"
 
     def get_next_action(self) -> str:
         """Get just the next action recommendation"""

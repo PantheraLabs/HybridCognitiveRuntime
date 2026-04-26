@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HCR Causal Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.26.0/cytoscape.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #cy {
+            width: 100%;
+            height: calc(100vh - 80px);
+            display: block;
+            background: #0f172a;
+        }
+        .glass {
+            background: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-online { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+        .status-offline { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+        .status-loading { background: #f59e0b; animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        #error-panel {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            display: none;
+        }
+        .btn {
+            background: #3b82f6;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        .btn:hover { background: #2563eb; }
+        .btn-secondary {
+            background: #334155;
+            margin-left: 10px;
+        }
+        .btn-secondary:hover { background: #475569; }
+    </style>
+</head>
+<body class="h-screen flex flex-col">
+    <!-- Header -->
+    <header class="h-20 flex items-center justify-between px-8 glass z-10 flex-shrink-0">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-xl italic">H</div>
+            <h1 class="text-xl font-semibold tracking-tight">HCR Temporal Causal Dashboard</h1>
+        </div>
+        <div class="flex items-center gap-4">
+            <div id="status" class="flex items-center px-4 py-2 rounded-full bg-slate-800 text-sm border border-slate-700">
+                <span class="status-dot status-loading"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+            <button onclick="refreshData()" class="btn">Refresh</button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow relative">
+        <div id="cy"></div>
+        
+        <!-- Error Panel -->
+        <div id="error-panel" class="glass rounded-2xl p-8 shadow-2xl">
+            <div class="text-6xl mb-4">⚠️</div>
+            <h2 class="text-xl font-semibold mb-2">HCR Engine Not Running</h2>
+            <p class="text-slate-400 mb-6 max-w-md">
+                The dashboard cannot connect to the HCR engine at <code class="bg-slate-800 px-2 py-1 rounded">localhost:8733</code>.
+            </p>
+            <div class="space-y-2 text-left text-sm text-slate-400 mb-6">
+                <p>To start the engine, run:</p>
+                <pre class="bg-slate-900 p-3 rounded-lg text-green-400 font-mono text-xs">python -m src.engine_server --project . --port 8733</pre>
+            </div>
+            <div>
+                <button onclick="refreshData()" class="btn">Try Again</button>
+                <button onclick="loadDemoData()" class="btn btn-secondary">Load Demo</button>
+            </div>
+        </div>
+        
+        <!-- Side Panel -->
+        <div class="absolute bottom-8 left-8 w-72 glass rounded-2xl p-6 z-10 shadow-2xl">
+            <h2 class="text-sm font-semibold uppercase tracking-widest text-slate-400 mb-4">Insights</h2>
+            <div id="insights" class="space-y-3">
+                <div class="text-sm text-slate-300 flex justify-between">
+                    <span>Total Nodes:</span>
+                    <span id="node-count" class="text-blue-400 font-mono">0</span>
+                </div>
+                <div class="text-sm text-slate-300 flex justify-between">
+                    <span>Edges:</span>
+                    <span id="edge-count" class="text-blue-400 font-mono">0</span>
+                </div>
+                <div class="text-xs text-slate-500 mt-4 pt-4 border-t border-slate-700">
+                    Nodes represent files/modules. Edges show causal dependencies from AST analysis.
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        let cy = null;
+        const ENGINE_URL = 'http://localhost:8733';
+
+        async function refreshData() {
+            const statusEl = document.getElementById('status');
+            const statusText = document.getElementById('status-text');
+            const statusDot = statusEl.querySelector('.status-dot');
+            const errorPanel = document.getElementById('error-panel');
+            const cyContainer = document.getElementById('cy');
+
+            statusDot.className = 'status-dot status-loading';
+            statusText.textContent = 'Connecting...';
+            errorPanel.style.display = 'none';
+            cyContainer.style.opacity = '1';
+
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                
+                const response = await fetch(`${ENGINE_URL}/causal_graph`, {
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const data = await response.json();
+                renderGraph(data);
+                
+                statusDot.className = 'status-dot status-online';
+                statusText.textContent = 'Engine Online';
+                statusEl.classList.remove('bg-red-500/20', 'text-red-400');
+                statusEl.classList.add('bg-green-500/20', 'text-green-400');
+                
+            } catch (error) {
+                console.error('Failed to connect:', error);
+                statusDot.className = 'status-dot status-offline';
+                statusText.textContent = 'Engine Offline';
+                statusEl.classList.remove('bg-green-500/20', 'text-green-400');
+                statusEl.classList.add('bg-red-500/20', 'text-red-400');
+                
+                errorPanel.style.display = 'block';
+                cyContainer.style.opacity = '0.3';
+            }
+        }
+
+        function loadDemoData() {
+            const demoData = {
+                forward: {
+                    'src/engine_api.py': ['src/state/cognitive_state.py', 'src/core/hco_engine.py'],
+                    'src/core/hco_engine.py': ['src/operators/base_operator.py'],
+                    'src/operators/neural_operator.py': ['src/llm/provider.py'],
+                    'src/web/dashboard.py': ['src/engine_api.py']
+                },
+                reverse: {}
+            };
+            renderGraph(demoData);
+            document.getElementById('error-panel').style.display = 'none';
+            document.getElementById('cy').style.opacity = '1';
+            
+            const statusEl = document.getElementById('status');
+            const statusText = document.getElementById('status-text');
+            const statusDot = statusEl.querySelector('.status-dot');
+            statusDot.className = 'status-dot status-online';
+            statusText.textContent = 'Demo Mode';
+        }
+
+        function renderGraph(data) {
+            const elements = [];
+            const processedNodes = new Set();
+            let edgeCount = 0;
+
+            // Add nodes and edges from forward edges
+            for (const [node, deps] of Object.entries(data.forward || {})) {
+                if (!processedNodes.has(node)) {
+                    elements.push({ 
+                        data: { 
+                            id: node, 
+                            label: node.split('/').pop(),
+                            fullPath: node
+                        } 
+                    });
+                    processedNodes.add(node);
+                }
+                for (const dep of deps) {
+                    if (!processedNodes.has(dep)) {
+                        elements.push({ 
+                            data: { 
+                                id: dep, 
+                                label: dep.split('/').pop() || dep,
+                                fullPath: dep
+                            } 
+                        });
+                        processedNodes.add(dep);
+                    }
+                    elements.push({ 
+                        data: { 
+                            id: `${node}->${dep}`, 
+                            source: node, 
+                            target: dep 
+                        } 
+                    });
+                    edgeCount++;
+                }
+            }
+
+            document.getElementById('node-count').innerText = processedNodes.size;
+            document.getElementById('edge-count').innerText = edgeCount;
+
+            if (cy) {
+                cy.destroy();
+            }
+
+            if (elements.length === 0) {
+                // Show empty state
+                const container = document.getElementById('cy');
+                container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#64748b;">No causal data available. Edit some Python files to build the graph.</div>';
+                return;
+            }
+
+            cy = cytoscape({
+                container: document.getElementById('cy'),
+                elements: elements,
+                style: [
+                    {
+                        selector: 'node',
+                        style: {
+                            'background-color': '#3b82f6',
+                            'label': 'data(label)',
+                            'color': '#f8fafc',
+                            'font-family': 'Inter',
+                            'font-size': '11px',
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            'width': '90px',
+                            'height': '35px',
+                            'shape': 'round-rectangle',
+                            'border-width': 2,
+                            'border-color': '#60a5fa',
+                            'text-wrap': 'wrap',
+                            'text-max-width': '80px'
+                        }
+                    },
+                    {
+                        selector: 'edge',
+                        style: {
+                            'width': 2,
+                            'line-color': '#475569',
+                            'target-arrow-color': '#475569',
+                            'target-arrow-shape': 'triangle',
+                            'curve-style': 'bezier',
+                            'arrow-scale': 1.2
+                        }
+                    },
+                    {
+                        selector: ':selected',
+                        style: {
+                            'background-color': '#f59e0b',
+                            'border-color': '#fbbf24'
+                        }
+                    }
+                ],
+                layout: {
+                    name: 'cose',
+                    padding: 50,
+                    animate: true,
+                    animationDuration: 500,
+                    nodeRepulsion: 400000,
+                    edgeElasticity: 100,
+                    gravity: 80
+                }
+            });
+
+            cy.on('tap', 'node', function(evt){
+                const node = evt.target;
+                console.log('Selected:', node.id());
+            });
+
+            cy.on('mouseover', 'node', function(evt){
+                document.body.style.cursor = 'pointer';
+            });
+
+            cy.on('mouseout', 'node', function(evt){
+                document.body.style.cursor = 'default';
+            });
+        }
+
+        // Initial load
+        refreshData();
+    </script>
+</body>
+</html>

@@ -118,6 +118,10 @@ class HCREngineHandler(BaseHTTPRequestHandler):
                 event_type = data.get('type', 'manual')
                 event_data = data.get('data', {})
                 
+                # Normalization (Fix #2): Auto-detect event type from payload
+                if event_type == 'manual' and ('path' in event_data or 'file' in event_data):
+                    event_type = 'file_edit'
+                
                 event = EngineEvent(
                     event_type=event_type,
                     timestamp=datetime.now(),

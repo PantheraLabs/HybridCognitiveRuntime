@@ -147,6 +147,44 @@ HCO = update(HCO, feedback)
 
 ## Current Status
 
-- Phase: Initialization
-- State: Architecture defined, implementation pending
-- Next: Implement core HCO structure and state representation
+- Phase: Product Development (Phase 5 Complete)
+- State: Core engine complete. **Phase 5 (The Cognitive Twin)** is fully integrated, providing:
+  - **Workflow Anticipation**: Markov Chain-based prediction of next file edits.
+  - **Friction Detection**: Tracking terminal failures to avoid repeating mistakes.
+  - **Behavioral Profiling**: Storing strict developer style constraints in `.hcr/profile.json`.
+- Next: Build real LLM connectors (OpenAI/Anthropic) and build the web-based State Visualizer.
+
+## Product Features
+
+### Resume Without Re-Explaining ✅ (80% Complete)
+First developer-facing product that eliminates context re-explanation problem.
+
+**Workflow:**
+1. Load cognitive state from `.hcr/session_state.json`
+2. Capture current reality (git + files + time gap)
+3. Run HCO sequence: ingest_context → infer_intent → suggest_action
+4. Output: [Current Task] [Progress %] [Next Action]
+
+**Components:**
+- `product/state_capture/git_tracker.py` - Git state monitoring
+- `product/state_capture/file_watcher.py` - File system tracking
+- `product/storage/state_persistence.py` - JSON state persistence
+- `product/hco_wrappers/dev_context_ops.py` - Dev context HCOs
+- `product/cli/resume.py` - CLI entry point
+- `product/vscode-extension/` - VS Code integration skeleton
+
+**Target Metrics:**
+- Sessions resumed without typing: >80%
+- Token reduction: 10-100x
+- Time to first action: <10 seconds
+
+### Web Dashboard 🚧
+State visualization tool for inspecting cognitive state and causal graphs.
+
+**Location:** `web/` (moved from `src/web/` for proper separation of concerns)
+
+**Features:**
+- Real-time engine status
+- Causal graph visualization (Cytoscape.js)
+- State inspection panel
+- Demo mode for testing

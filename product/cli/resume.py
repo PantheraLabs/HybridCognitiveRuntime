@@ -130,6 +130,100 @@ def run_resume(project_path: str, output_format: str = "text") -> str:
         return format_output_text(context)
 
 
+def _get_api_data(endpoint: str, method: str = "GET", data: dict = None) -> Optional[dict]:
+    """Helper to get data from running engine server"""
+    import requests
+    try:
+        url = f"http://localhost:8733{endpoint}"
+        if method == "GET":
+            r = requests.get(url, timeout=2)
+        else:
+            r = requests.post(url, json=data, timeout=2)
+        
+        if r.status_code == 200:
+            return r.json()
+    except:
+        pass
+    return None
+
+
+def show_graph(project_path: str):
+    """Visualize the causal graph using rich"""
+    from rich.console import Console
+    from rich.tree import Tree
+    from rich.panel import Panel
+    
+    console = Console()
+    
+    # Try to get data from server
+    data = _get_api_data("/causal_graph")
+    
+    if not data:
+        # Fallback to local engine
+        engine = HCREngine(project_path)
+        engine.load_state()
+        data = {
+            "forward": {k: list(v) for k, v in engine.dependency_graph.forward_edges.items()},
+            "reverse": {k: list(v) for k, v in engine.dependency_graph.reverse_edges.items()}
+        }
+    
+    console.print(Panel("[bold cyan]Temporal Causal Graph[/bold cyan]", expand=False))
+    
+    if not data["forward"]:
+        console.print("[yellow]Graph is empty. Edit some files to populate it![/yellow]")
+        return
+        
+    # Build a tree visualization
+    root_tree = Tree("[bold blue]Project Dependencies[/bold blue]")
+    
+    for node, deps in data["forward"].items():
+        node_tree = root_tree.add(f"[green]{node}[/green]")
+        for dep in deps:
+            node_tree.add(f"[white]{dep}[/white]")
+            
+    console.print(root_tree)
+    console.print("\n[bold blue]Impact Map (Reverse Edges):[/bold blue]")
+    for node, impacts in data["reverse"].items():
+        if impacts:
+            console.print(f"  [cyan]{node}[/cyan] impacts -> [yellow]{', '.join(impacts)}[/yellow]")
+
+
+def show_impact(project_path: str, file_path: str):
+    """Show predicted impact of a change using rich"""
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    
+    console = Console()
+    
+    # Try to get data from server
+    data = _get_api_data("/impact", method="POST", data={"file_path": file_path})
+    
+    if not data:
+        # Fallback to local engine
+        engine = HCREngine(project_path)
+        engine.load_state()
+        impacted = engine.impact_analyzer.predict_impact(file_path)
+    else:
+        impacted = data.get("impacted_files", [])
+        
+    console.print(Panel(f"[bold red]Impact Analysis: {file_path}[/bold red]", expand=False))
+    
+    if not impacted:
+        console.print(f"[green]No immediate ripple effects predicted for {file_path}.[/green]")
+        return
+        
+    table = Table(title="Predicted Affected Files")
+    table.add_column("File Path", style="cyan")
+    table.add_column("Relationship", style="magenta")
+    
+    for imp in impacted:
+        table.add_row(imp, "Dependent")
+        
+    console.print(table)
+    console.print(f"\n[bold yellow]Advice:[/bold yellow] Modifying [bold cyan]{file_path}[/bold cyan] might require updates to the [bold]{len(impacted)}[/bold] files listed above.")
+
+
 def main():
     """CLI entry point"""
     parser = argparse.ArgumentParser(
@@ -155,6 +249,24 @@ def main():
         help="Project path (default: current directory)"
     )
     
+    parser.add_argument(
+        "--graph",
+        action="store_true",
+        help="Visualize the Temporal Causal Graph"
+    )
+    
+    parser.add_argument(
+        "--impact",
+        metavar="FILE",
+        help="Show predicted impact of modifying a specific file"
+    )
+    
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Launch the visual Causal Dashboard in your browser"
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -162,6 +274,13 @@ def main():
             # Start HTTP server
             print(f"[HCR] Starting engine server for: {args.project}")
             start_server(args.project)
+        elif args.dashboard:
+            from src.web.dashboard import launch_dashboard
+            launch_dashboard()
+        elif args.graph:
+            show_graph(args.project)
+        elif args.impact:
+            show_impact(args.project, args.impact)
         else:
             # One-off resume
             output = run_resume(args.project, args.format)

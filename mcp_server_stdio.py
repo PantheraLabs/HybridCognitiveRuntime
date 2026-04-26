@@ -196,7 +196,7 @@ Time Gap: {context.get('gap_minutes', 0):.1f} minutes
 
 Context Facts:
 """
-            for fact in context.get('facts', [])[:10]:
+            for fact in context.get('facts', [])[-10:]:
                 result_text += f"- {fact}\n"
     
     elif name == "resume_session":

@@ -34,7 +34,7 @@ class HCRConfig:
 
     # Cache Settings
     cache_enabled: bool = True
-    cache_ttl_seconds: int = 300                # 5 min TTL
+    cache_ttl_seconds: int = 60                 # 1 min TTL
 
     # Engine Settings
     engine_port: int = 8733
@@ -44,6 +44,8 @@ class HCRConfig:
     groq_model: str = "llama-3.3-70b-versatile"
     google_model: str = "gemini-2.0-flash"
     ollama_model: str = "llama3.2"
+    openai_model: str = "gpt-4o-mini"
+    anthropic_model: str = "claude-3-5-haiku-latest"
     ollama_host: str = "http://localhost:11434"
 
     def get_model(self) -> str:
@@ -54,6 +56,8 @@ class HCRConfig:
             "groq": self.groq_model,
             "google": self.google_model,
             "ollama": self.ollama_model,
+            "openai": self.openai_model,
+            "anthropic": self.anthropic_model,
         }
         return defaults.get(self.llm_provider, self.groq_model)
 
@@ -66,6 +70,8 @@ class HCRConfig:
         env_keys = {
             "groq": ["GROQ_API_KEY", "HCR_API_KEY"],
             "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY", "HCR_API_KEY"],
+            "openai": ["OPENAI_API_KEY", "HCR_API_KEY"],
+            "anthropic": ["ANTHROPIC_API_KEY", "HCR_API_KEY"],
             "ollama": [],  # no key needed
         }
 

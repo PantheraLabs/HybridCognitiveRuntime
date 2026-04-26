@@ -168,8 +168,22 @@ def get_provider(
             host=kwargs.get("host", "http://localhost:11434"),
             **kwargs
         )
+    elif provider_name == "openai":
+        from .providers.openai import OpenAIProvider
+        return OpenAIProvider(
+            model=model or "gpt-4o-mini",
+            api_key=api_key,
+            **kwargs
+        )
+    elif provider_name == "anthropic":
+        from .providers.anthropic import AnthropicProvider
+        return AnthropicProvider(
+            model=model or "claude-3-5-haiku-latest",
+            api_key=api_key,
+            **kwargs
+        )
     else:
         raise ValueError(
             f"Unknown LLM provider: '{provider_name}'. "
-            f"Supported: groq, google, ollama"
+            f"Supported: groq, google, ollama, openai, anthropic"
         )
