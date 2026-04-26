@@ -1,208 +1,286 @@
 """
-Neural Operator (Φ_n)
+Neural Operator (Φ_n) — LLM-Powered
 
-Handles ambiguity and pattern recognition.
-Operates on the latent vector space.
+Handles ambiguity and pattern recognition using real LLM inference.
+Replaces the simulated vector math with actual language model calls.
 """
 
-from typing import Dict, Any, List, Callable, Optional
-import random
+from typing import Dict, Any, List, Optional
 from .base_operator import BaseOperator, OperatorType
 from ..state.cognitive_state import CognitiveState
+
+
+# System prompt for the Neural Operator
+NEURAL_SYSTEM_PROMPT = """You are a cognitive reasoning engine analyzing developer workflow state.
+You receive structured facts about a developer's current project context and must infer:
+1. What the developer is currently working on (a clear, specific task description)
+2. Their likely intent (what they're trying to achieve)
+3. A confidence score (0.0-1.0) in your inference
+
+Respond ONLY with valid JSON in this exact format:
+{
+    "inferred_task": "specific description of current task",
+    "intent": "what the developer is trying to achieve",
+    "confidence": 0.85,
+    "key_observations": ["observation 1", "observation 2"],
+    "inferred_facts": ["fact_1", "fact_2"]
+}"""
+
+
+SIMILARITY_SYSTEM_PROMPT = """You are a cognitive reasoning engine comparing two developer workflow states.
+Determine how semantically similar these two states are and whether the developer's context has meaningfully changed.
+
+Respond ONLY with valid JSON:
+{
+    "similarity_score": 0.85,
+    "changed": false,
+    "summary": "brief description of what changed or stayed the same"
+}"""
 
 
 class NeuralOperator(BaseOperator):
     """
     Neural operator for pattern recognition and handling ambiguity.
-    
-    In a production system, this would use actual neural networks.
-    For this implementation, we simulate pattern operations.
+
+    Uses real LLM inference to analyze developer context and infer intent.
+    Falls back to heuristic analysis if no LLM provider is configured.
     """
-    
+
     def __init__(
         self,
         operator_id: str,
         pattern_size: int = 128,
-        pattern_detector: Optional[Callable[[List[float]], bool]] = None,
-        description: str = ""
+        pattern_detector=None,
+        description: str = "",
+        llm_provider=None,
     ):
         super().__init__(operator_id, OperatorType.NEURAL, description)
         self.pattern_size = pattern_size
-        self.pattern_detector = pattern_detector or self._default_detector
-    
-    def _default_detector(self, latent: List[float]) -> bool:
-        """Default pattern detection - checks if latent has non-zero values"""
-        return any(l != 0 for l in latent)
-    
+        self.pattern_detector = pattern_detector
+        self._llm = llm_provider
+
+    def set_llm_provider(self, provider):
+        """Set or update the LLM provider"""
+        self._llm = provider
+
     def _execute(self, state: CognitiveState, **kwargs) -> Dict[str, Any]:
         """
-        Execute neural pattern recognition on latent state.
-        
-        Args:
-            state: Current cognitive state
-            **kwargs:
-                - pattern_type: type of pattern to detect
-                - transformation: optional transformation to apply
-                
-        Returns:
-            Operation result with updated latent state and detected patterns
+        Execute neural pattern recognition on cognitive state.
+
+        If an LLM provider is available, uses real inference.
+        Otherwise, falls back to heuristic analysis.
         """
-        latent = state.latent.copy() if state.latent else []
-        
-        # Initialize latent if empty
-        if not latent:
-            latent = [0.0] * self.pattern_size
-        
-        # Ensure correct size
-        if len(latent) < self.pattern_size:
-            latent.extend([0.0] * (self.pattern_size - len(latent)))
-        elif len(latent) > self.pattern_size:
-            latent = latent[:self.pattern_size]
-        
-        # Pattern detection
-        pattern_detected = self.pattern_detector(latent)
-        
-        # Pattern transformation (simulated)
-        pattern_type = kwargs.get("pattern_type", "default")
-        transformation = kwargs.get("transformation")
-        
-        if transformation:
-            transformed = transformation(latent)
+        if self._llm:
+            return self._execute_with_llm(state, **kwargs)
         else:
-            # Simple pattern enhancement simulation
-            transformed = self._apply_pattern_transformation(latent, pattern_type)
-        
-        # Detect patterns in facts
+            return self._execute_heuristic(state, **kwargs)
+
+    def _execute_with_llm(self, state: CognitiveState, **kwargs) -> Dict[str, Any]:
+        """Execute using real LLM inference"""
+
+        # Build context prompt from cognitive state
+        prompt = self._build_context_prompt(state)
+
+        try:
+            result = self._llm.structured_complete(
+                prompt=prompt,
+                system=NEURAL_SYSTEM_PROMPT,
+                temperature=0.3,
+                max_tokens=512,
+            )
+
+            if result is None:
+                # JSON parsing failed, fall back to heuristic
+                return self._execute_heuristic(state, **kwargs)
+
+            # Transform LLM output into state update format
+            facts = []
+            dependencies = []
+
+            # Add inferred task as fact
+            if result.get("inferred_task"):
+                facts.append(f"task:{result['inferred_task']}")
+
+            # Add intent
+            if result.get("intent"):
+                facts.append(f"intent:{result['intent']}")
+
+            # Add any inferred facts
+            for fact in result.get("inferred_facts", []):
+                facts.append(fact)
+
+            # Add key observations as facts
+            for obs in result.get("key_observations", []):
+                facts.append(f"observation:{obs}")
+
+            # Add dependency on LLM inference
+            dependencies.append("llm_inference:neural_analysis")
+
+            return {
+                "facts": facts,
+                "dependencies": dependencies,
+            }
+
+        except Exception as e:
+            # On any LLM failure, fall back gracefully
+            return self._execute_heuristic(state, **kwargs)
+
+    def _build_context_prompt(self, state: CognitiveState) -> str:
+        """Build a prompt from the current cognitive state"""
+        lines = ["## Current Developer Context\n"]
+
+        # Symbolic facts
+        if state.symbolic.facts:
+            lines.append("### Facts:")
+            for fact in state.symbolic.facts[:20]:  # Limit to avoid token waste
+                lines.append(f"- {fact}")
+
+        # Rules
+        if state.symbolic.rules:
+            lines.append("\n### Active Rules:")
+            for rule in state.symbolic.rules[:10]:
+                lines.append(f"- {rule}")
+
+        # Causal state
+        if state.causal.dependencies:
+            lines.append("\n### Dependencies:")
+            for dep in state.causal.dependencies[:10]:
+                lines.append(f"- {dep}")
+
+        if state.causal.effects:
+            lines.append("\n### Known Effects:")
+            for effect in state.causal.effects[:10]:
+                lines.append(f"- {effect}")
+
+        # Meta
+        lines.append(f"\n### Meta:")
+        lines.append(f"- Confidence: {state.meta.confidence:.2f}")
+        lines.append(f"- Uncertainty: {state.meta.uncertainty:.2f}")
+
+        return "\n".join(lines)
+
+    def _execute_heuristic(self, state: CognitiveState, **kwargs) -> Dict[str, Any]:
+        """
+        Fallback heuristic analysis when no LLM is available.
+        Lightweight pattern matching on symbolic facts.
+        """
         facts = []
-        if pattern_detected:
-            facts.append(f"pattern_detected:{pattern_type}")
-            if kwargs.get("extract_features", False):
-                features = self._extract_features(transformed)
-                for feature in features:
-                    facts.append(f"feature:{feature}")
-        
+        dependencies = []
+
+        # Infer from existing facts using keyword matching
+        all_facts = " ".join(state.symbolic.facts).lower()
+
+        if "test" in all_facts:
+            facts.append("pattern_detected:testing_activity")
+        if "fix" in all_facts or "bug" in all_facts:
+            facts.append("pattern_detected:debugging_activity")
+        if "implement" in all_facts or "add" in all_facts or "create" in all_facts:
+            facts.append("pattern_detected:feature_development")
+        if "refactor" in all_facts:
+            facts.append("pattern_detected:refactoring")
+
+        # Check file diversity
+        edited_files = [f for f in state.symbolic.facts if f.startswith("edited:")]
+        if len(edited_files) > 5:
+            facts.append("pattern_detected:wide_scope_changes")
+        elif len(edited_files) == 1:
+            facts.append("pattern_detected:focused_editing")
+
+        dependencies.append("heuristic_inference:pattern_matching")
+
         return {
-            "latent": transformed,
             "facts": facts,
-            "dependencies": [f"pattern_recognition:{pattern_type}"]
+            "dependencies": dependencies,
         }
-    
-    def _apply_pattern_transformation(
-        self,
-        latent: List[float],
-        pattern_type: str
-    ) -> List[float]:
-        """
-        Apply a transformation based on pattern type.
-        
-        This is a simulated neural transformation.
-        """
-        if pattern_type == "amplify":
-            # Amplify strong signals
-            return [
-                l * 1.5 if abs(l) > 0.5 else l * 0.8
-                for l in latent
-            ]
-        elif pattern_type == "smooth":
-            # Smooth values toward mean
-            mean = sum(latent) / len(latent) if latent else 0
-            return [
-                l * 0.7 + mean * 0.3
-                for l in latent
-            ]
-        elif pattern_type == "sharpen":
-            # Increase contrast
-            mean = sum(latent) / len(latent) if latent else 0
-            return [
-                l + (l - mean) * 0.5
-                for l in latent
-            ]
-        else:
-            # Default: small random perturbation (simulated learning)
-            return [
-                l + random.gauss(0, 0.01)
-                for l in latent
-            ]
-    
-    def _extract_features(self, latent: List[float]) -> List[str]:
-        """Extract symbolic features from latent representation"""
-        features = []
-        
-        # Simple feature extraction based on statistics
-        mean = sum(latent) / len(latent) if latent else 0
-        variance = sum((l - mean) ** 2 for l in latent) / len(latent) if latent else 0
-        max_val = max(latent) if latent else 0
-        min_val = min(latent) if latent else 0
-        
-        if mean > 0.3:
-            features.append("high_activation")
-        elif mean < -0.3:
-            features.append("low_activation")
-        
-        if variance > 0.5:
-            features.append("high_variance")
-        else:
-            features.append("low_variance")
-        
-        if max_val - min_val > 1.0:
-            features.append("wide_range")
-        
-        return features
 
 
 class SimilarityOperator(NeuralOperator):
     """
-    Neural operator for computing similarity between states.
+    Neural operator for computing semantic similarity between states.
+    Uses LLM for semantic comparison, falls back to fact overlap analysis.
     """
-    
+
     def _execute(self, state: CognitiveState, **kwargs) -> Dict[str, Any]:
-        """
-        Compute similarity between current state and reference.
-        
-        Args:
-            **kwargs:
-                - reference_state: another CognitiveState to compare
-                - similarity_threshold: threshold for declaring similarity
-        """
+        """Compare current state with a reference state"""
         reference = kwargs.get("reference_state")
         threshold = kwargs.get("similarity_threshold", 0.7)
-        
-        if not reference or not reference.latent or not state.latent:
+
+        if not reference:
             return {
                 "facts": ["similarity:no_comparison_possible"],
-                "dependencies": ["similarity_check:failed"]
+                "dependencies": ["similarity_check:no_reference"],
             }
-        
-        # Cosine similarity computation
-        similarity = self._cosine_similarity(state.latent, reference.latent)
-        
-        facts = [f"similarity_score:{similarity:.3f}"]
-        
-        if similarity >= threshold:
-            facts.append("similarity:high")
-            facts.append("pattern:match")
+
+        if self._llm:
+            return self._compare_with_llm(state, reference, threshold)
         else:
-            facts.append("similarity:low")
-            facts.append("pattern:divergence")
-        
+            return self._compare_heuristic(state, reference, threshold)
+
+    def _compare_with_llm(
+        self, state: CognitiveState, reference: CognitiveState, threshold: float
+    ) -> Dict[str, Any]:
+        """Use LLM for semantic state comparison"""
+        prompt = (
+            f"## State A (Current):\nFacts: {state.symbolic.facts[:15]}\n"
+            f"Dependencies: {state.causal.dependencies[:10]}\n\n"
+            f"## State B (Reference):\nFacts: {reference.symbolic.facts[:15]}\n"
+            f"Dependencies: {reference.causal.dependencies[:10]}"
+        )
+
+        try:
+            result = self._llm.structured_complete(
+                prompt=prompt,
+                system=SIMILARITY_SYSTEM_PROMPT,
+                temperature=0.1,
+                max_tokens=256,
+            )
+
+            if result is None:
+                return self._compare_heuristic(state, reference, threshold)
+
+            score = result.get("similarity_score", 0.5)
+            facts = [f"similarity_score:{score:.3f}"]
+
+            if score >= threshold:
+                facts.extend(["similarity:high", "pattern:match"])
+            else:
+                facts.extend(["similarity:low", "pattern:divergence"])
+
+            if result.get("summary"):
+                facts.append(f"comparison:{result['summary']}")
+
+            return {
+                "facts": facts,
+                "dependencies": ["similarity_check:llm_comparison"],
+            }
+
+        except Exception:
+            return self._compare_heuristic(state, reference, threshold)
+
+    def _compare_heuristic(
+        self, state: CognitiveState, reference: CognitiveState, threshold: float
+    ) -> Dict[str, Any]:
+        """Fallback: compare states using fact overlap (Jaccard similarity)"""
+        current_facts = set(state.symbolic.facts)
+        ref_facts = set(reference.symbolic.facts)
+
+        if not current_facts and not ref_facts:
+            similarity = 1.0
+        elif not current_facts or not ref_facts:
+            similarity = 0.0
+        else:
+            intersection = current_facts & ref_facts
+            union = current_facts | ref_facts
+            similarity = len(intersection) / len(union)
+
+        facts = [f"similarity_score:{similarity:.3f}"]
+
+        if similarity >= threshold:
+            facts.extend(["similarity:high", "pattern:match"])
+        else:
+            facts.extend(["similarity:low", "pattern:divergence"])
+
         return {
             "facts": facts,
-            "dependencies": ["similarity_check:completed"]
+            "dependencies": ["similarity_check:jaccard"],
         }
-    
-    @staticmethod
-    def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
-        """Compute cosine similarity between two vectors"""
-        # Pad or truncate to match lengths
-        length = min(len(v1), len(v2))
-        v1 = v1[:length]
-        v2 = v2[:length]
-        
-        dot_product = sum(a * b for a, b in zip(v1, v2))
-        magnitude1 = sum(a * a for a in v1) ** 0.5
-        magnitude2 = sum(b * b for b in v2) ** 0.5
-        
-        if magnitude1 == 0 or magnitude2 == 0:
-            return 0.0
-        
-        return dot_product / (magnitude1 * magnitude2)
