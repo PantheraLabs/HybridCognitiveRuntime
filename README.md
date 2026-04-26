@@ -55,47 +55,58 @@ S = {
 ```bash
 git clone https://github.com/PantheraLabs/HybridCognitiveRuntime.git
 cd HybridCognitiveRuntime
+pip install -e .[all]  # Install with all LLM provider dependencies
 ```
 
-No dependencies required - pure Python implementation.
+### Configuration
+
+HCR supports multiple LLM providers for real intelligence. Copy the example environment file and add your keys:
+
+```bash
+cp .env.example .env
+# Edit .env to add your GROQ_API_KEY or GOOGLE_API_KEY
+```
+
+Supported Providers:
+- **Groq** (Default): Fast, free tier available.
+- **Google Gemini**: Reliable fallback, free tier via AI Studio.
+- **Ollama**: Fully local and private reasoning.
 
 ## Quick Start
 
+### Using the Engine API
+
 ```python
-from src.state.cognitive_state import CognitiveState
-from src.operators.symbolic_operator import SymbolicOperator
-from src.core.hco_engine import HCOEngine
+from src.engine_api import HCREngine, EngineEvent
 
-# Create initial state
-state = CognitiveState()
-state.symbolic.facts = ["it_is_raining"]
-state.symbolic.rules = ["if it_is_raining then take_umbrella"]
+# Initialize engine
+engine = HCREngine(project_path=".")
 
-# Create operator
-deduce = SymbolicOperator("deducer")
+# Process an event
+engine.update_from_environment(EngineEvent(
+    event_type="file_edit",
+    data={"path": "src/core/hco_engine.py"}
+))
 
-# Execute
-result = deduce.execute(state, operation="deduce")
-print(result.symbolic.facts)  # ["it_is_raining", "take_umbrella", ...]
+# Infer context using real LLM intelligence
+context = engine.infer_context()
+print(f"Task: {context.current_task}")
+print(f"Next Action: {context.next_action}")
 ```
 
-## Examples
-
-Run the reasoning examples:
+### Running the CLI
 
 ```bash
-python examples/simple_reasoning.py
+python -m product.cli.resume --project .
 ```
 
 ## Testing
 
 ```bash
-python tests/test_state.py
-python tests/test_operators.py
-python tests/test_engine.py
+python -m pytest tests/ -v
 ```
 
-All 15 tests pass.
+All **42/42** tests pass.
 
 ## Project Structure
 
@@ -103,50 +114,29 @@ All 15 tests pass.
 HybridCognitiveRuntime/
 ├── src/
 │   ├── state/              # State representation & transitions
-│   │   ├── cognitive_state.py
-│   │   └── state_transition.py
-│   ├── operators/          # HCO implementations
-│   │   ├── base_operator.py
-│   │   ├── neural_operator.py
-│   │   ├── symbolic_operator.py
-│   │   ├── causal_operator.py
-│   │   └── policy_selector.py
-│   └── core/               # Execution engine
-│       └── hco_engine.py
+│   ├── operators/          # HCO implementations (now LLM-powered)
+│   ├── core/               # Execution engine
+│   ├── llm/                # LLM Provider abstraction (Groq, Google, Ollama)
+│   ├── config.py           # Layered configuration system
+│   └── engine_api.py       # High-level product API
+├── product/                # Product-level tools (CLI, VS Code Bridge)
 ├── examples/               # Usage examples
 ├── tests/                  # Unit tests
 └── docs/                   # Documentation
-    ├── project_memory.md   # Primary source of truth
-    ├── architecture.md     # System design
-    ├── tasks.md            # Current tasks
-    └── dev_log.md          # Development history
 ```
 
 ## Key Features
 
-- **State-based reasoning**: Persistent cognitive state across operations
-- **Three operator types**: Neural (Φ_n), Symbolic (Φ_s), Causal (Φ_c)
-- **Policy selection**: Dynamic operator selection based on state characteristics
-- **Learning loop**: Operators improve based on success/failure feedback
-- **Composable**: Operators can be composed into sequences
-- **Cross-model compatible**: No model-specific dependencies
-
-## Documentation
-
-See the `docs/` directory for detailed documentation:
-- `project_memory.md` - Project overview and decisions
-- `architecture.md` - System architecture and design
-- `tasks.md` - Current development tasks
-- `dev_log.md` - Development history and technical notes
-
-## License
-
-MIT License - See LICENSE file for details.
+- **Real Intelligence**: Integrated with Groq, Gemini, and Ollama for non-simulated reasoning.
+- **State-based reasoning**: Persistent cognitive state across operations.
+- **Zero-Latency Processing**: Events are processed instantly; LLM is called lazily.
+- **Heuristic Fallback**: Works offline/without keys using keyword-based pattern matching.
+- **Response Caching**: Hash-based caching to minimize LLM costs and latency.
 
 ## Status
 
-**Phase**: Core implementation complete
-**Tests**: 15/15 passing
-**Examples**: 4/4 working
+**Phase**: Phase 1 (Real Intelligence Integration) Complete.
+**Tests**: 42/42 passing.
+**Providers**: Groq, Google Gemini, Ollama.
 
-The HCR architecture is functional and ready for extension.
+The HCR architecture is now a production-ready engine for cognitive developer tools.

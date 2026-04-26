@@ -17,16 +17,16 @@ class TestNeuralOperator(unittest.TestCase):
     """Test neural operators"""
     
     def test_pattern_detection(self):
-        """Test pattern detection in latent state"""
+        """Test pattern detection via heuristic analysis (no LLM)"""
         state = CognitiveState()
-        state.latent = [0.5, -0.3, 0.8, 0.1]
+        state.symbolic.facts = ["edited:fix_bug.py", "task:fixing_bug"]
         
         op = NeuralOperator("test_neural", pattern_size=4)
-        result = op.execute(state, pattern_type="default", extract_features=True)
+        result = op.execute(state)
         
-        # Should have detected pattern and added facts
+        # Should have detected debugging pattern from facts
         self.assertTrue(len(result.symbolic.facts) > 0)
-        self.assertIn("pattern_detected:default", result.symbolic.facts)
+        self.assertIn("pattern_detected:debugging_activity", result.symbolic.facts)
     
     def test_similarity_computation(self):
         """Test cosine similarity between states"""

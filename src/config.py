@@ -14,6 +14,12 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv():
+        pass
+
 
 @dataclass
 class HCRConfig:
@@ -80,6 +86,9 @@ def load_config(project_path: Optional[str] = None) -> HCRConfig:
 
     Priority: env vars > project .hcr/config.json > ~/.hcr/config.json > defaults
     """
+    # Load .env file if it exists
+    load_dotenv()
+    
     config = HCRConfig()
 
     # Layer 1: User-level config (~/.hcr/config.json)

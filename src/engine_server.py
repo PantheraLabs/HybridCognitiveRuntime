@@ -74,7 +74,21 @@ class HCREngineHandler(BaseHTTPRequestHandler):
                 self._send_json({"cleared": success})
             except Exception as e:
                 self._send_error(str(e), 500)
-        
+        elif path == '/causal_graph':
+            try:
+                graph = {
+                    "forward": engine.dependency_graph.forward_edges,
+                    "reverse": engine.dependency_graph.reverse_edges
+                }
+                # Convert sets to lists for JSON serialization
+                serializable_graph = {
+                    "forward": {k: list(v) for k, v in graph["forward"].items()},
+                    "reverse": {k: list(v) for k, v in graph["reverse"].items()}
+                }
+                self._send_json(serializable_graph)
+            except Exception as e:
+                self._send_error(str(e), 500)
+                
         else:
             self._send_error(f"Unknown endpoint: {path}", 404)
     
@@ -136,6 +150,18 @@ class HCREngineHandler(BaseHTTPRequestHandler):
                 
                 self._send_json(context.to_dict())
                 
+            except Exception as e:
+                self._send_error(str(e), 500)
+                
+        elif path == '/impact':
+            try:
+                file_path = data.get('file_path')
+                if not file_path:
+                    self._send_error("Missing file_path", 400)
+                    return
+                
+                impacted = engine.impact_analyzer.predict_impact(file_path)
+                self._send_json({"impacted_files": impacted})
             except Exception as e:
                 self._send_error(str(e), 500)
         

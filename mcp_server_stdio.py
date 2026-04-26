@@ -60,6 +60,12 @@ class HCRMCPBridge:
         except:
             return {"running": False}
 
+    def get_causal_graph(self) -> Dict[str, Any]:
+        return self._hcr_get("/causal_graph")
+
+    def get_impact_analysis(self, file_path: str) -> Dict[str, Any]:
+        return self._hcr_post("/impact", {"file_path": file_path})
+
 
 # Create bridge
 hcr = HCRMCPBridge()
@@ -144,6 +150,28 @@ def handle_tools_list(id: int):
                         "type": "object",
                         "properties": {}
                     }
+                },
+                {
+                    "name": "get_causal_graph",
+                    "description": "Get the current Temporal Causal Graph showing dependencies between files",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "name": "get_impact_analysis",
+                    "description": "Predict which files will be impacted by modifying a specific file based on the Causal Graph",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "file_path": {
+                                "type": "string",
+                                "description": "The file path to analyze for ripple effects"
+                            }
+                        },
+                        "required": ["file_path"]
+                    }
                 }
             ]
         }
@@ -204,6 +232,33 @@ Confidence: {result.get('confidence', 0):.2f}"""
             result_text += f"Engine: {status.get('status')}\n"
         if not status.get('running'):
             result_text += "Start HCR with: python -m product.cli.resume --server --project <path>"
+            
+    elif name == "get_causal_graph":
+        result = hcr.get_causal_graph()
+        if "error" in result:
+            result_text = f"HCR Error: {result['error']}"
+        else:
+            result_text = "Temporal Causal Graph Dependencies:\n\nForward Edges (Dependencies):\n"
+            for node, deps in result.get("forward", {}).items():
+                result_text += f"- {node} depends on: {', '.join(deps)}\n"
+            
+            result_text += "\nReverse Edges (Dependents):\n"
+            for node, deps in result.get("reverse", {}).items():
+                result_text += f"- {node} impacts: {', '.join(deps)}\n"
+                
+    elif name == "get_impact_analysis":
+        file_path = arguments.get("file_path", "")
+        result = hcr.get_impact_analysis(file_path)
+        if "error" in result:
+            result_text = f"HCR Error: {result['error']}"
+        else:
+            impacted = result.get("impacted_files", [])
+            if not impacted:
+                result_text = f"No predicted impact found for {file_path}. This file appears isolated."
+            else:
+                result_text = f"Predicted Causal Impact for modifying '{file_path}':\nThe following files depend on it and may break:\n\n"
+                for imp in impacted:
+                    result_text += f"- {imp}\n"
     
     else:
         result_text = f"Unknown tool: {name}"
