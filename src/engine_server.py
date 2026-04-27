@@ -32,11 +32,15 @@ class HCREngineHandler(BaseHTTPRequestHandler):
     
     def _send_json(self, data: Dict[str, Any], status: int = 200):
         """Send JSON response"""
-        self.send_response(status)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        try:
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(data).encode())
+        except (BrokenPipeError, ConnectionAbortedError):
+            # Client disconnected before we could send the data
+            pass
     
     def _send_error(self, message: str, status: int = 400):
         """Send error response"""

@@ -119,7 +119,7 @@ class HCREngine:
         self.impact_analyzer = ImpactAnalyzer(self.dependency_graph)
         
         self.profile_manager = ProfileManager(str(self.project_path))
-        self.friction_detector = FrictionDetector(self.event_store)
+        self.friction_detector = FrictionDetector()
         self.workflow_predictor = WorkflowPredictor(self.event_store)
         self._replay_causal_events()
 
@@ -178,10 +178,12 @@ class HCREngine:
         from .operators.symbolic_operator import SymbolicOperator
         from .operators.neural_operator import NeuralOperator
         from .operators.causal_operator import CausalOperator
+        from .operators.neural_causal_operator import NeuralCausalOperator
 
         self.hco_engine.register_operators([
             SymbolicOperator("context_ingest", description="Ingest context into state"),
             NeuralOperator("intent_inference", pattern_size=64, description="Infer intent"),
+            NeuralCausalOperator("causal_discovery", description="Discover latent causal links"),
             CausalOperator("action_suggester", description="Suggest next actions")
         ])
 
@@ -356,13 +358,27 @@ class HCREngine:
     def _run_analysis(self):
         """Run HCO analysis on current state"""
         # Run context ingestion
-        sequence = ["context_ingest", "intent_inference", "action_suggester"]
+        sequence = ["context_ingest", "intent_inference", "causal_discovery", "action_suggester"]
 
         self._current_state = self.hco_engine.execute_sequence(
             initial_state=self._current_state,
             operator_sequence=sequence,
             confidence=0.75
         )
+        
+        # Sync latent links to the causal graph
+        for fact in self._current_state.symbolic.facts:
+            if fact.startswith("latent_link:"):
+                try:
+                    # Parse: latent_link:source->target (type)
+                    content = fact.replace("latent_link:", "")
+                    source, rest = content.split("->")
+                    target = rest.split(" (")[0].strip()
+                    l_type = rest.split(" (")[1].replace(")", "").strip() if "(" in rest else "latent"
+                    
+                    self.dependency_graph.add_latent_link(source.strip(), target, l_type)
+                except Exception:
+                    continue
 
     def infer_context(self) -> EngineContext:
         """

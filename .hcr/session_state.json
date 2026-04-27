@@ -1,6 +1,6 @@
 {
-  "saved_at": "2026-04-26T23:15:25.077498",
-  "project_path": ".",
+  "saved_at": "2026-04-27T22:22:57.701443",
+  "project_path": "C:\\Users\\rishi\\Documents\\GitHub\\HybridCognitiveRuntime",
   "cognitive_state": {
     "latent": [
       0.028584871895989926,
@@ -121,7 +121,19 @@
         "edited:src/llm/providers/anthropic.py",
         "pattern_detected:testing_activity",
         "pattern_detected:feature_development",
-        "pattern_detected:wide_scope_changes"
+        "pattern_detected:wide_scope_changes",
+        "pattern_detected:testing_activity",
+        "pattern_detected:feature_development",
+        "pattern_detected:wide_scope_changes",
+        "warning:no_llm_for_causal_discovery",
+        "pattern_detected:testing_activity",
+        "pattern_detected:feature_development",
+        "pattern_detected:wide_scope_changes",
+        "warning:no_llm_for_causal_discovery",
+        "pattern_detected:testing_activity",
+        "pattern_detected:feature_development",
+        "pattern_detected:wide_scope_changes",
+        "warning:no_llm_for_causal_discovery"
       ],
       "rules": [],
       "constraints": []
@@ -180,6 +192,15 @@
         "edited:src/llm/providers/anthropic.py -> file_in_focus",
         "deductive_reasoning",
         "heuristic_inference:pattern_matching",
+        "causal_prediction",
+        "deductive_reasoning",
+        "heuristic_inference:pattern_matching",
+        "causal_prediction",
+        "deductive_reasoning",
+        "heuristic_inference:pattern_matching",
+        "causal_prediction",
+        "deductive_reasoning",
+        "heuristic_inference:pattern_matching",
         "causal_prediction"
       ],
       "effects": [
@@ -190,7 +211,7 @@
     "meta": {
       "confidence": 0.75,
       "uncertainty": 0.25,
-      "timestamp": "2026-04-26T23:15:25.074858"
+      "timestamp": "2026-04-27T22:22:57.701443"
     }
   }
 }

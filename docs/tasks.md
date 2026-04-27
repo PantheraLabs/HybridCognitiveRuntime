@@ -1,8 +1,8 @@
 # Tasks
 
-## Current Project Status: Core Engine Implementation Complete ✅
+## Current Project Status: Product Development Phase 1 ✅
 
-The core HCR architecture is now implemented and tested. The project is transitioning from Phase 1-5 of initialization to the **Product Roadmap**.
+The core HCR architecture is implemented. LLM Connectors are now integrated and being refined.
 
 ## Completed Tasks (Phase 1-5)
 
@@ -24,9 +24,10 @@ The core HCR architecture is now implemented and tested. The project is transiti
 - [x] HTTP Server (`src/engine_server.py`)
 
 ### Interfaces ✅
-- [x] Thin CLI wrapper (`product/cli/resume.py`)
-- [x] VS Code Extension foundation (`product/vscode-extension/src/extension.ts`)
-- [x] MCP Server integration (`mcp_server.py`)
+- [x] Professional CLI (`product/cli/main.py`) - `hcr init --auto`
+- [x] Legacy CLI wrapper (`product/cli/resume.py`)
+- [x] MCP Server integration (`mcp_server_stdio.py`) - Universal IDE support
+- [x] VS Code Extension (deprecated in favor of MCP)
 
 ### The Cognitive Twin (Phase 5) ✅
 - [x] Workflow Anticipation (Markov Chains) (`src/causal/workflow_predictor.py`)
@@ -39,9 +40,11 @@ The core HCR architecture is now implemented and tested. The project is transiti
 ## Active Product Development (See [Product Roadmap](product_roadmap.md))
 
 ### Immediate Priorities (Next 2 Weeks)
-1. **[Roadmap Phase 1]** Implement real LLM connectors (OpenAI/Anthropic).
-2. **[Roadmap Phase 1]** Update Neural Operator to use real completions instead of simulations.
-3. **[Roadmap Phase 3]** Build initial web-based State Visualizer.
+1. **[Roadmap Phase 1]** Refine real LLM connectors (OpenAI/Anthropic). [DONE] ✅
+2. **[Roadmap Phase 1]** Update Neural Operator to use real completions. [DONE] ✅
+4. **[Roadmap Phase 3]** Build initial web-based State Visualizer. [DONE] ✅
+5. **[Roadmap Phase 4]** Predictive Causal Simulation & Risk Heatmaps. [DONE] ✅
+6. **[Roadmap Phase 5]** Neural Causal Discovery (Latent Link Inference). [NEW] ⚡
 
 ## Testing Status
 - [x] 15/15 Unit tests passing

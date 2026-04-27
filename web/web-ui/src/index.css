@@ -9,12 +9,24 @@
   }
 
   body {
-    @apply bg-background text-foreground antialiased selection:bg-zinc-800 selection:text-zinc-100;
+    @apply bg-[#0A0A0A] text-zinc-300 antialiased selection:bg-blue-500/30 selection:text-blue-100;
+    position: relative;
+    font-family: 'Inter', sans-serif;
   }
+
+  h1, h2, h3 {
+    font-family: 'Newsreader', serif;
+    @apply tracking-tight;
+  }
+  
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
 }
 
 .glass-panel {
-  @apply bg-zinc-900/50 backdrop-blur-xl border border-zinc-800/50 shadow-2xl;
+  @apply bg-zinc-900/40 backdrop-blur-3xl border border-white/5 shadow-2xl;
 }
 
 .subtle-grid {
@@ -25,7 +37,40 @@
 }
 
 .premium-shadow {
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 8px 32px -8px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.03), 0 8px 32px -8px rgba(0, 0, 0, 0.8);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 3px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Literary Tech Utilities */
+.serif-display {
+  font-family: 'Newsreader', serif;
+  font-variation-settings: "opsz" 72;
+}
+
+.mono-ui {
+  font-family: 'JetBrains Mono', monospace;
+  @apply text-[10px] font-bold uppercase tracking-[0.2em];
+}
+
+.glass-panel-light {
+  @apply bg-white/[0.01] border border-white/5 backdrop-blur-[40px] shadow-[0_8px_32px_rgba(0,0,0,0.4)];
+}
+
+.hero-gradient {
+  background: radial-gradient(circle at 50% 50%, rgba(59, 130, 246, 0.05) 0%, transparent 70%);
 }
 
 /* Custom Scrollbar */
@@ -55,4 +100,47 @@
 }
 .react-flow__minimap-mask {
   fill: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* GitHub-Style Spotlight Effect */
+.spotlight-card {
+  position: relative;
+}
+
+.spotlight-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    800px circle at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    rgba(255, 255, 255, 0.15),
+    transparent 40%
+  );
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.spotlight-card:hover::after {
+  opacity: 1;
+}
+
+/* Glowing Line Animation */
+@keyframes flow {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+.animate-flow {
+  animation: flow 3s infinite linear;
 }

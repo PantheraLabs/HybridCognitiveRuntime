@@ -1,50 +1,84 @@
-from typing import List, Optional
-from ..causal.event_store import EventStore
+"""
+Friction Detector - Part of the Cognitive Twin
+
+Detects when developer workflow hits friction (errors, blockers).
+"""
+
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+from datetime import datetime
+
+
+@dataclass
+class FrictionEvent:
+    """A detected friction point in the workflow"""
+    type: str  # 'error', 'blocker', 'timeout', 'unknown'
+    source: str  # Where it came from (terminal, git, etc.)
+    message: str
+    timestamp: datetime
+    severity: float  # 0.0 to 1.0
+
 
 class FrictionDetector:
-    """
-    Detects user friction (e.g. repeated terminal failures, rapid reverts)
-    to prevent the AI from repeating the same mistakes in a loop.
-    """
-    def __init__(self, event_store: EventStore):
-        self.event_store = event_store
-        self.friction_warnings: List[str] = []
+    """Detects friction in developer workflow"""
+    
+    def __init__(self):
+        self.events: List[FrictionEvent] = []
+        self.error_patterns = [
+            "error", "failed", "exception", "traceback",
+            "WinError", "ConnectionAborted", "BrokenPipe",
+            "timeout", "refused"
+        ]
+    
+    def analyze_terminal_output(self, output: str, exit_code: int) -> Optional[FrictionEvent]:
+        """Analyze terminal output for friction"""
+        if exit_code == 0 and not any(p in output.lower() for p in self.error_patterns):
+            return None
+        
+        # Determine severity
+        severity = 0.5
+        if exit_code != 0:
+            severity += 0.3
+        if "WinError" in output or "Error" in output:
+            severity += 0.2
+        
+        return FrictionEvent(
+            type='error' if exit_code != 0 else 'warning',
+            source='terminal',
+            message=output[:200],  # Truncate
+            timestamp=datetime.now(),
+            severity=min(severity, 1.0)
+        )
+    
+    def get_recent_friction(self, minutes: int = 30) -> List[FrictionEvent]:
+        """Get friction events from last N minutes"""
+        from datetime import timedelta
+        cutoff = datetime.now() - timedelta(minutes=minutes)
+        return [e for e in self.events if e.timestamp > cutoff]
+    
+    def record_event(self, event: FrictionEvent):
+        """Record a friction event"""
+        self.events.append(event)
+        # Keep only last 100 events
+        if len(self.events) > 100:
+            self.events = self.events[-100:]
 
     def analyze_friction(self) -> List[str]:
-        """
-        Analyze recent events for friction patterns.
-        Returns a list of warning strings to be injected into the MCP context.
-        """
-        self.friction_warnings.clear()
-        self._check_terminal_loops()
-        return self.friction_warnings
-
-    def _check_terminal_loops(self):
-        """Detect if the last few terminal commands failed repeatedly."""
-        terminal_events = [e for e in self.event_store.events if e.event_type == "terminal"]
+        """Analyze current friction state and return warnings"""
+        recent = self.get_recent_friction(60)  # Last hour
+        warnings = []
         
-        if len(terminal_events) < 2:
-            return
+        if not recent:
+            return []
             
-        # Look at the last 3 terminal events
-        recent_terminals = terminal_events[-3:]
-        
-        # A simple heuristic: if the details contain common error keywords
-        # and the command is the same or similar, we have a loop.
-        error_keywords = ["error", "exception", "failed", "traceback", "fatal"]
-        
-        failed_count = 0
-        last_failed_cmd = None
-        
-        for event in recent_terminals:
-            # Check if details indicate an error
-            details_lower = str(event.details).lower()
-            if any(kw in details_lower for kw in error_keywords):
-                failed_count += 1
-                last_failed_cmd = event.source
-        
-        if failed_count >= 2:
-            self.friction_warnings.append(
-                f"[FRICTION DETECTED] The command '{last_failed_cmd}' has failed {failed_count} times recently. "
-                f"Do NOT attempt to run this exact command again without changing the approach."
-            )
+        # Group by type
+        errors = [e for e in recent if e.type == 'error']
+        if errors:
+            warnings.append(f"Detected {len(errors)} errors in recent activity")
+            
+        # Check for high severity
+        high_severity = [e for e in recent if e.severity > 0.8]
+        if high_severity:
+            warnings.append(f"Critical friction detected: {high_severity[-1].message}")
+            
+        return warnings

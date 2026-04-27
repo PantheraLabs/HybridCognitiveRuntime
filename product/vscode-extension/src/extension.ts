@@ -8,9 +8,11 @@ const HCR_HOST = 'localhost';
 
 // Global state
 let lastFocusTime: Date = new Date();
+let lastActiveFile: string = '';
 let outputChannel: vscode.OutputChannel;
 let statusBarItem: vscode.StatusBarItem;
 let engineServer: vscode.Terminal | undefined;
+let heartbeatInterval: NodeJS.Timeout | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
     // Create output channel
@@ -43,11 +45,17 @@ export function activate(context: vscode.ExtensionContext) {
     // Set up file watchers for state updates
     setupFileWatcher(context);
     
+    // Set up active tab tracking
+    setupActiveTabTracker(context);
+    
     // Set up window focus tracking for auto-resume
     const config = vscode.workspace.getConfiguration('hcr');
     if (config.get('autoResume', true)) {
         setupAutoResume();
     }
+    
+    // Set up heartbeat to keep session alive
+    setupHeartbeat(context);
     
     // Start engine server and initial check
     startEngineServer().then(() => {

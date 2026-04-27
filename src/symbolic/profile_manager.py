@@ -1,53 +1,101 @@
+"""
+Profile Manager - Part of the Cognitive Twin
+
+Tracks developer behavioral patterns and preferences.
+"""
+
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 import json
-import os
-from typing import Dict, Any, List
+
+
+@dataclass
+class DeveloperProfile:
+    """Developer behavioral profile"""
+    # Workflow patterns
+    preferred_working_hours: List[int] = field(default_factory=list)  # Hours of day (0-23)
+    average_session_length: float = 0.0  # minutes
+    
+    # File patterns
+    most_edited_file_types: List[str] = field(default_factory=list)
+    typical_file_batch_size: int = 0  # files per commit
+    
+    # Tool preferences
+    primary_ide: str = ""
+    preferred_llm_provider: str = "groq"  # default
+    
+    # Meta
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+
 
 class ProfileManager:
-    """
-    Maintains a behavioral profile of the user to inject personalized coding style
-    constraints into the AI's context.
-    """
-    def __init__(self, workspace_path: str):
-        self.profile_path = os.path.join(workspace_path, ".hcr", "profile.json")
-        self.profile: Dict[str, Any] = self._load_profile()
-
-    def _load_profile(self) -> Dict[str, Any]:
-        if os.path.exists(self.profile_path):
+    """Manages developer behavioral profiles"""
+    
+    def __init__(self, storage_path: Optional[str] = None):
+        self.storage_path = storage_path
+        self.profile = DeveloperProfile()
+        self._load_profile()
+    
+    def _load_profile(self):
+        """Load profile from disk if exists"""
+        if not self.storage_path:
+            return
+        
+        path = Path(self.storage_path)
+        if path.exists():
             try:
-                with open(self.profile_path, "r") as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
+                with open(path) as f:
+                    data = json.load(f)
+                    self.profile = DeveloperProfile(**data)
+            except:
                 pass
-                
-        # Default empty profile
+    
+    def save_profile(self):
+        """Save profile to disk"""
+        if not self.storage_path:
+            return
+        
+        path = Path(self.storage_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(path, 'w') as f:
+            json.dump(self.profile.__dict__, f, default=str)
+    
+    def record_session(self, duration_minutes: float):
+        """Record a completed session"""
+        # Update running average
+        if self.profile.average_session_length == 0:
+            self.profile.average_session_length = duration_minutes
+        else:
+            # Exponential moving average
+            self.profile.average_session_length = (
+                0.7 * self.profile.average_session_length + 
+                0.3 * duration_minutes
+            )
+        
+        self.profile.updated_at = datetime.now()
+        self.save_profile()
+    
+    def get_workflow_prediction(self, current_hour: int) -> Dict[str, Any]:
+        """Predict developer behavior based on profile"""
+        # Simple heuristic: if they've worked at this hour before, likely to continue
+        hour_match = current_hour in self.profile.preferred_working_hours
+        
         return {
-            "coding_style": [],
-            "preferred_patterns": [],
-            "strictness_level": "medium"
+            "likely_to_continue": hour_match,
+            "typical_session_remaining": self.profile.average_session_length * 0.3,
+            "suggested_break": self.profile.average_session_length > 90,
         }
 
-    def save_profile(self):
-        os.makedirs(os.path.dirname(self.profile_path), exist_ok=True)
-        with open(self.profile_path, "w") as f:
-            json.dump(self.profile, f, indent=2)
-
-    def add_style_rule(self, rule: str):
-        """Add an observed coding style rule to the profile."""
-        if rule not in self.profile.setdefault("coding_style", []):
-            self.profile["coding_style"].append(rule)
-            self.save_profile()
-
     def get_context_injection(self) -> List[str]:
-        """Format the profile as a list of constraints for the MCP context."""
-        constraints = []
-        if self.profile.get("coding_style"):
-            constraints.append("User Coding Style Preferences:")
-            for style in self.profile["coding_style"]:
-                constraints.append(f" - {style}")
-                
-        if self.profile.get("preferred_patterns"):
-            constraints.append("Preferred Patterns:")
-            for pattern in self.profile["preferred_patterns"]:
-                constraints.append(f" - {pattern}")
-                
-        return constraints
+        """Get profile-based rules for context injection"""
+        rules = []
+        if self.profile.primary_ide:
+            rules.append(f"- Optimized for {self.profile.primary_ide}")
+        if self.profile.most_edited_file_types:
+            rules.append(f"- Preferred languages: {', '.join(self.profile.most_edited_file_types)}")
+        
+        return rules

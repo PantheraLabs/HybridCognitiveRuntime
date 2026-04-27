@@ -14,6 +14,8 @@ class DependencyGraph:
         self.forward_edges: Dict[str, Set[str]] = {}
         # Maps a node to a list of nodes that depend on it
         self.reverse_edges: Dict[str, Set[str]] = {}
+        # Latent links discovered by LLM (cause, effect, type, reason)
+        self.latent_edges: List[dict] = []
 
     def add_dependency(self, source: str, target: str):
         """Add a directed edge from source to target (source depends on target)."""
@@ -24,6 +26,44 @@ class DependencyGraph:
         if target not in self.reverse_edges:
             self.reverse_edges[target] = set()
         self.reverse_edges[target].add(source)
+
+    def add_latent_link(self, source: str, target: str, link_type: str = "latent", reason: str = ""):
+        """Add a latent link discovered by neural inference."""
+        self.latent_edges.append({
+            "source": source,
+            "target": target,
+            "type": link_type,
+            "reason": reason
+        })
+        # Also add to standard graph for impact analysis
+        self.add_dependency(source, target)
+
+    def get_metrics(self, node: str) -> dict:
+        """Calculate and return metrics for a specific node"""
+        from .metrics import MetricsAnalyzer
+        fragility = MetricsAnalyzer.calculate_fragility(node)
+        centrality = MetricsAnalyzer.calculate_centrality(
+            node, 
+            self.forward_edges, 
+            self.reverse_edges
+        )
+        return {
+            "fragility": fragility,
+            "centrality": centrality,
+            "risk_score": round((fragility + centrality) / 2, 2)
+        }
+
+    def to_dict(self) -> dict:
+        """Convert graph to dictionary with node metrics and latent links"""
+        nodes = list(set(list(self.forward_edges.keys()) + list(self.reverse_edges.keys())))
+        node_data = {node: self.get_metrics(node) for node in nodes}
+        
+        return {
+            "forward": self.forward_edges,
+            "reverse": self.reverse_edges,
+            "latent_links": self.latent_edges,
+            "metrics": node_data
+        }
 
     def get_dependencies(self, node: str) -> List[str]:
         """Get all nodes that the given node depends on."""
