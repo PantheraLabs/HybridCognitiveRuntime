@@ -46,8 +46,10 @@ def test_heuristic_inference_helpers(monkeypatch, tmp_path):
     ]
     engine._current_state.causal.effects = ["predicted:Run unit tests"]
 
-    assert engine._extract_task() == "fixing bug"
-    assert engine._calculate_progress() == 90
+    expected_task = "fixing_bug".replace("_", " ")
+    expected_progress = min(90, 50 + 20 + 10 + 10)
+    assert engine._extract_task() == expected_task
+    assert engine._calculate_progress() == expected_progress
     assert engine._extract_next_action() == "Run unit tests"
 
 

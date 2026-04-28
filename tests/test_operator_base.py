@@ -40,8 +40,8 @@ def test_composite_operator_executes_all():
     op2 = DummyOperator("two")
 
     composite = CompositeOperator("combo", [op1, op2])
-    result = composite.execute(state, confidence=0.7)
+    composite_state = composite.execute(state, confidence=0.7)
 
-    assert "ran:one" in result.symbolic.facts
-    assert "ran:two" in result.symbolic.facts
+    assert "ran:one" in composite_state.symbolic.facts
+    assert "ran:two" in composite_state.symbolic.facts
     assert composite.execution_count == 1

@@ -40,8 +40,10 @@ def test_dependency_graph_update_and_metrics(tmp_path):
 
     metrics = graph.get_metrics(str(temp_file))
     assert 0.0 <= metrics["fragility"] <= 1.0
-    assert 0.0 <= metrics["centrality"] <= 1.0
-    assert 0.0 <= metrics["risk_score"] <= 1.0
+    expected_centrality = min(1.0, round((0 * 0.7 + 1 * 0.3) / 10.0, 2))
+    assert metrics["centrality"] == expected_centrality
+    expected_risk_score = round((metrics["fragility"] + metrics["centrality"]) / 2, 2)
+    assert metrics["risk_score"] == expected_risk_score
 
     graph.add_latent_link("x.py", "y.py", link_type="config", reason="env")
     graph_dict = graph.to_dict()

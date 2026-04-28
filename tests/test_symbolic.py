@@ -40,7 +40,8 @@ def test_profile_manager_record_and_context(tmp_path):
     assert manager.profile.average_session_length == 100
 
     manager.record_session(50)
-    assert round(manager.profile.average_session_length, 2) == 85.0
+    expected_average = 0.7 * 100 + 0.3 * 50
+    assert round(manager.profile.average_session_length, 2) == round(expected_average, 2)
 
     manager.profile.primary_ide = "VS Code"
     manager.profile.most_edited_file_types = ["py", "md"]
