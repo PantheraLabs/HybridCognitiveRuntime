@@ -9,11 +9,9 @@ import os
 import sys
 import time
 import signal
-import json
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-import requests
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -110,18 +108,29 @@ class HCRDaemon:
             print(f"HCR Daemon is RUNNING (PID: {pid})")
             print(f"Project: {self.project_path}")
             print(f"Log: {self.log_file}")
+            print("\nFeatures active:")
+            print("  ✓ File watcher with diff tracking")
+            print("  ✓ AST analysis (functions, classes, imports)")
+            print("  ✓ Direct HCREngine integration (no HTTP)")
+            print("  ✓ Auto-save every 30 seconds")
             
-            # Check engine connectivity
-            try:
-                resp = requests.get(f"http://localhost:{self.config.engine_port}/health", timeout=1)
-                if resp.status_code == 200:
-                    print(f"Engine: CONNECTED (Port: {self.config.engine_port})")
-                else:
-                    print(f"Engine: UNHEALTHY (Status: {resp.status_code})")
-            except:
-                print("Engine: NOT RUNNING")
+            # Check if state exists
+            state_file = self.hcr_dir / "session_state.json"
+            if state_file.exists():
+                import json
+                try:
+                    with open(state_file) as f:
+                        data = json.load(f)
+                    cog_state = data.get("cognitive_state", {})
+                    facts = cog_state.get("symbolic", {}).get("facts", [])
+                    print(f"\nState: {len(facts)} facts recorded")
+                except:
+                    print("\nState: exists (unreadable)")
+            else:
+                print("\nState: not initialized")
         else:
             print("HCR Daemon is STOPPED")
+            print(f"Run 'python -m product.daemon start --project {self.project_path}' to start")
 
     def _handle_exit(self, signum, frame):
         self.logger.info(f"Received signal {signum}. Shutting down...")
@@ -141,21 +150,45 @@ class HCRDaemon:
         self.logger.info("Daemon exited.")
 
     def _run_main_loop(self):
-        """Main daemon loop"""
+        """Main daemon loop - now with direct HCREngine integration"""
         from .file_watcher_service import FileWatcherService
+        from src.engine_api import HCREngine
         
-        engine_url = f"http://localhost:{self.config.engine_port}"
-        watcher = FileWatcherService(str(self.project_path), engine_url)
+        # Initialize HCREngine directly (no HTTP needed)
+        self.logger.info("Initializing HCREngine...")
+        engine = HCREngine(str(self.project_path), self.config)
+        
+        # Load existing state if available
+        if engine.state_exists():
+            engine.load_state()
+            self.logger.info("Loaded existing cognitive state")
+        else:
+            self.logger.info("No existing state found - starting fresh")
+        
+        # Start file watcher with direct engine integration
+        watcher = FileWatcherService(str(self.project_path), engine)
         
         try:
             watcher.start()
             self.services.append(watcher)
             
+            self.logger.info("=" * 60)
+            self.logger.info("HCR Daemon is FULLY ACTIVE")
+            self.logger.info("Watching for file changes with diff tracking...")
+            self.logger.info("=" * 60)
+            
             while self.is_running:
-                # Monitor health of services if needed
-                time.sleep(2)
+                # Periodic state save (every 30 seconds)
+                time.sleep(30)
+                if engine._current_state:
+                    engine.save_state()
+                    self.logger.debug("Auto-saved cognitive state")
+                    
         finally:
             watcher.stop()
+            # Final state save
+            engine.save_state()
+            self.logger.info("Final state saved")
 
 if __name__ == "__main__":
     import argparse

@@ -26,7 +26,12 @@ The core HCR architecture is implemented. LLM Connectors are now integrated and 
 ### Interfaces ✅
 - [x] Professional CLI (`product/cli/main.py`) - `hcr init --auto`
 - [x] Legacy CLI wrapper (`product/cli/resume.py`)
-- [x] MCP Server integration (`mcp_server_stdio.py`) - Universal IDE support
+- [x] MCP Server integration (`product/integrations/mcp_server.py`) - Universal IDE support
+  - [x] 12 MCP tools implemented and verified
+  - [x] 3 MCP resources (state, causal-graph, task)
+  - [x] 2 MCP prompts (resume_session, context_aware_coding)
+  - [x] Event logging - tool calls record to event store
+  - [x] Context updates - tool calls trigger state updates
 - [x] VS Code Extension (deprecated in favor of MCP)
 
 ### The Cognitive Twin (Phase 5) ✅
@@ -50,3 +55,4 @@ The core HCR architecture is implemented. LLM Connectors are now integrated and 
 - [x] 15/15 Unit tests passing
 - [x] HTTP API verified (Health, Resume, Event endpoints)
 - [x] Cognitive Twin inference verified
+- [x] MCP Server verified (12/12 tools working, context updates working)

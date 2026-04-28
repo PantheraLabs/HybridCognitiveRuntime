@@ -91,7 +91,7 @@ class HCREngine:
     def __init__(self, project_path: str, config: Optional[HCRConfig] = None):
         self.project_path = Path(project_path)
         self.hcr_dir = self.project_path / ".hcr"
-        self.state_file = self.hcr_dir / "session_state.json"
+        self.state_file = self.hcr_dir / "state.json"
 
         # Load config
         self.config = config or load_config(project_path)
@@ -207,29 +207,76 @@ class HCREngine:
             with open(self.state_file, 'r') as f:
                 data = json.load(f)
 
-            # Parse cognitive state
-            if "cognitive_state" in data:
+            # Parse unified state format (v2.0)
+            if "state" in data:
+                # New unified format
+                self._current_state = CognitiveState.from_dict(data["state"])
+                self._last_saved = datetime.fromisoformat(data.get("metadata", {}).get("merged_at", datetime.now().isoformat()))
+            elif "cognitive_state" in data:
+                # Legacy format
                 self._current_state = CognitiveState.from_dict(data["cognitive_state"])
+                self._last_saved = datetime.fromisoformat(data.get("saved_at", datetime.now().isoformat()))
             else:
-                # Legacy: reconstruct from analysis
+                # Very legacy: reconstruct
                 self._current_state = self._reconstruct_state_from_legacy(data)
-
-            self._last_saved = datetime.fromisoformat(data.get("saved_at", datetime.now().isoformat()))
+                self._last_saved = datetime.now()
+            
             return self._current_state
 
         except Exception as e:
             print(f"[HCR Engine] Error loading state: {e}")
             return None
 
+    def _deduplicate_facts(self, facts: List[str], max_facts: int = 100) -> List[str]:
+        """
+        Deduplicate and limit facts to prevent state bloat.
+        
+        - Removes exact duplicates
+        - Removes low-value observation noise
+        - Keeps most recent facts up to max_facts
+        """
+        if not facts:
+            return facts
+        
+        # Filter out low-value noise
+        noise_prefixes = ('observation:mcp_tool:', 'pattern:checking_')
+        filtered = [f for f in facts if not f.startswith(noise_prefixes)]
+        
+        # Deduplicate while preserving order
+        seen = set()
+        unique = []
+        for f in filtered:
+            if f not in seen:
+                seen.add(f)
+                unique.append(f)
+        
+        # Keep only most recent facts
+        return unique[-max_facts:]
+    
     def save_state(self) -> bool:
-        """Save current cognitive state to disk"""
+        """Save current cognitive state to disk with deduplication"""
         try:
             self.hcr_dir.mkdir(exist_ok=True)
+            
+            # Clean up state before saving
+            if self._current_state and hasattr(self._current_state, 'symbolic'):
+                original_count = len(self._current_state.symbolic.facts)
+                self._current_state.symbolic.facts = self._deduplicate_facts(
+                    self._current_state.symbolic.facts, max_facts=100
+                )
+                if original_count != len(self._current_state.symbolic.facts):
+                    print(f"[HCR Engine] Cleaned facts: {original_count} → {len(self._current_state.symbolic.facts)}")
 
+            # Build unified state format (v2.0)
             data = {
+                "version": "2.0.0",
                 "saved_at": datetime.now().isoformat(),
                 "project_path": str(self.project_path),
-                "cognitive_state": self._current_state.to_dict() if self._current_state else {}
+                "state": self._current_state.to_dict() if self._current_state else {},
+                "metadata": {
+                    "fact_count": len(self._current_state.symbolic.facts) if self._current_state else 0,
+                    "last_saved": datetime.now().isoformat()
+                }
             }
 
             with open(self.state_file, 'w') as f:
@@ -264,9 +311,11 @@ class HCREngine:
             self._handle_git_commit(event.data)
         elif event.event_type == "terminal":
             self._handle_terminal(event.data)
+        elif event.event_type == "mcp_tool_call":
+            self._handle_mcp_tool_call(event.data)
 
         # Run HCO analysis if significant event
-        if event.event_type in ["window_focus", "git_commit"]:
+        if event.event_type in ["window_focus", "git_commit", "mcp_tool_call"]:
             self._ensure_llm_on_neural_ops()
             self._run_analysis()
 
@@ -354,6 +403,32 @@ class HCREngine:
 
         if not success:
             self._current_state.symbolic.facts.append(f"error:{command}")
+
+    def _handle_mcp_tool_call(self, data: Dict[str, Any]):
+        """Process MCP tool call event"""
+        tool_name = data.get("tool", "unknown")
+        args = data.get("args", {})
+
+        # Log to event store
+        event = CausalEvent(
+            event_id=str(uuid.uuid4()),
+            timestamp=datetime.now().isoformat(),
+            event_type="mcp_tool_call",
+            source=tool_name,
+            details=data
+        )
+        self.event_store.append(event)
+
+        # Add to symbolic facts
+        fact = f"mcp_tool:{tool_name}"
+        if fact not in self._current_state.symbolic.facts:
+            self._current_state.symbolic.facts.append(fact)
+
+        # Track specific tool usage patterns
+        if "state" in tool_name.lower():
+            self._current_state.symbolic.facts.append("pattern:checking_state")
+        if "task" in tool_name.lower() or "action" in tool_name.lower():
+            self._current_state.symbolic.facts.append("pattern:querying_context")
 
     def _run_analysis(self):
         """Run HCO analysis on current state"""
