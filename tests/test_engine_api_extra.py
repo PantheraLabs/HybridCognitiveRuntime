@@ -38,11 +38,11 @@ def test_heuristic_inference_helpers(monkeypatch, tmp_path):
     engine._current_state.symbolic.facts = [
         "edited:alpha.py",
         "commit:add feature",
-        "task:fixing_bug",
         "test:pytest",
         "edited:beta.py",
         "edited:gamma.py",
         "edited:delta.py",
+        "task:fixing_bug",
     ]
     engine._current_state.causal.effects = ["predicted:Run unit tests"]
 
