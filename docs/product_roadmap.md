@@ -1,4 +1,12 @@
-# Product Roadmap: HCR (Transitioning from Engine to Product)
+<div align="center">
+  <img src="../assets/images/logo.png" alt="HCR Logo" width="150"/>
+  <h1>Product Roadmap</h1>
+  <p>Transitioning from Engine to Product</p>
+</div>
+
+---
+
+**License**: Proprietary - See [LICENSE](../LICENSE) | **Author**: Rishi Praseeth Krishnan
 
 This document outlines the strategic plan to evolve the **Hybrid Cognitive Runtime (HCR)** from a technical architecture into a complete, market-ready product.
 

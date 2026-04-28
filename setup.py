@@ -4,7 +4,7 @@ setup(
     name="hcr",
     version="0.2.0",
     description="Hybrid Cognitive Runtime — State-based cognitive execution system",
-    author="PantheraLabs",
+    author="Rishi Praseeth Krishnan",
     url="https://github.com/PantheraLabs/HybridCognitiveRuntime",
     packages=find_packages(),
     python_requires=">=3.9",
@@ -28,7 +28,7 @@ setup(
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
-        "License :: OSI Approved :: MIT License",
+        "License :: Other/Proprietary License",
         "Programming Language :: Python :: 3",
         "Topic :: Software Development :: Libraries",
     ],

@@ -1,8 +1,14 @@
 # Tasks
 
+<div align="center">
+  <img src="../assets/images/logo.png" alt="HCR Logo" width="150"/>
+</div>
+
 ## Current Project Status: Product Development Phase 1 ✅
 
 The core HCR architecture is implemented. LLM Connectors are now integrated and being refined.
+
+**License**: Proprietary - See [LICENSE](../LICENSE)
 
 ## Completed Tasks (Phase 1-5)
 

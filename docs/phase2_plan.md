@@ -1,7 +1,14 @@
-# Phase 2 Plan: Autonomous Context Extraction (The "Awareness" Upgrade)
+<div align="center">
+  <img src="../assets/images/logo.png" alt="HCR Logo" width="150"/>
+  <h1>Phase 2 Plan</h1>
+  <p>Autonomous Context Extraction (The "Awareness" Upgrade)</p>
+</div>
+
+---
 
 **Status:** Planning  
-**Goal:** Make HCR a silent background daemon that watches your work in real time — no manual input required.
+**Goal:** Make HCR a silent background daemon that watches your work in real time — no manual input required.  
+**License:** Proprietary - See [LICENSE](../LICENSE) | **Author:** Rishi Praseeth Krishnan
 
 ---
 

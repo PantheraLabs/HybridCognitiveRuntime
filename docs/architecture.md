@@ -1,4 +1,8 @@
-# Architecture
+<div align="center">
+  <img src="../assets/images/logo.png" alt="HCR Logo" width="150"/>
+  <h1>Architecture</h1>
+</div>
+
 
 ## System Architecture
 
@@ -58,7 +62,7 @@
 
 #### 2. Operators Module (`src/operators/`)
 - `base_operator.py` - Abstract HCO interface
-- `neural_operator.py` - Φ_n implementation
+- `neural_operator.py` - Φ_n implementation (LLM-powered)
 - `symbolic_operator.py` - Φ_s implementation
 - `causal_operator.py` - Φ_c implementation
 - `policy_selector.py` - Π implementation
@@ -68,6 +72,36 @@
 - `operator_registry.py` - HCO catalog
 - `execution_context.py` - Execution management
 - `learning_loop.py` - Feedback integration
+
+#### 4. LLM Module (`src/llm/`)
+- `provider.py` - LLM provider abstraction
+- `groq_provider.py` - Groq integration
+- `google_provider.py` - Google Gemini integration
+- `ollama_provider.py` - Local Ollama support
+
+#### 5. Engine API (`src/`)
+- `engine_api.py` - High-level product API
+- `config.py` - Layered configuration system
+
+### Product Components
+
+#### 1. State Capture (`product/state_capture/`)
+- `git_tracker.py` - Git state monitoring
+- `file_watcher.py` - File system tracking
+- `terminal_monitor.py` - Terminal output capture
+
+#### 2. Storage (`product/storage/`)
+- `state_persistence.py` - JSON/YAML persistence with git-like versioning
+
+#### 3. HCO Wrappers (`product/hco_wrappers/`)
+- `dev_context_ops.py` - Developer context HCOs
+
+#### 4. CLI (`product/cli/`)
+- `main.py` - Professional CLI (hcr init, resume, status, dashboard)
+- `resume.py` - Resume command implementation
+
+#### 5. Integrations (`product/integrations/`)
+- `mcp_server.py` - MCP server for IDE integration (Windsurf, Claude, Cursor)
 
 ### Data Flow
 

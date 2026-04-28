@@ -1,4 +1,12 @@
-# HCR Strategic Vision: The Unreplicable Product
+<div align="center">
+  <img src="../assets/images/logo.png" alt="HCR Logo" width="150"/>
+  <h1>Strategic Vision</h1>
+  <p>The Unreplicable Product</p>
+</div>
+
+---
+
+**License**: Proprietary - See [LICENSE](../LICENSE) | **Author**: Rishi Praseeth Krishnan
 
 ## The Brutal Honest Assessment
 

@@ -1,7 +1,15 @@
-# HCR Codebase Review - Professional Audit
-**Date:** 2026-04-28
-**Reviewer:** Cascade (AI Dev Team)
-**Scope:** Full codebase analysis for gaps, optimizations, and technical debt
+<div align="center">
+  <img src="../assets/images/logo.png" alt="HCR Logo" width="150"/>
+  <h1>Codebase Review - Professional Audit</h1>
+</div>
+
+---
+
+**Date:** 2026-04-28  
+**Reviewer:** Cascade (AI Dev Team)  
+**Scope:** Full codebase analysis for gaps, optimizations, and technical debt  
+**License:** Proprietary - See [LICENSE](../LICENSE)  
+**Author:** Rishi Praseeth Krishnan
 
 ---
 

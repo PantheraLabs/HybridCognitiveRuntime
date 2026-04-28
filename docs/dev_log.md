@@ -1,5 +1,28 @@
 # Development Log
 
+## 2026-04-28 - Branding & Documentation Update
+
+### README Overhaul
+**Changes:**
+- Added centered logo with badge shields (Python, Tests, LLM Support, License)
+- New comparison table: Traditional AI vs HCR
+- Added "Why HCR?" section explaining the problem/solution
+- Use cases table with practical applications
+- Performance metrics table
+- Professional footer with links
+
+### License Change
+- Changed from MIT to **Proprietary License**
+- Updated README badge (blue → red)
+- Updated setup.py classifiers and author
+- Created LICENSE file with full terms
+
+### Assets Folder
+- Created `assets/images/` folder structure
+- Logo ready to be saved as `logo.png`
+
+---
+
 ## 2026-04-28 - Unified State Format (v2.0)
 
 ### Merged All State Files Into One

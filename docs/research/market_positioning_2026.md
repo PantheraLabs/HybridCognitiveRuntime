@@ -1,4 +1,11 @@
-# HCR Market Positioning - April 2026
+<div align="center">
+  <img src="../../assets/images/logo.png" alt="HCR Logo" width="150"/>
+  <h1>Market Positioning - April 2026</h1>
+</div>
+
+---
+
+**License:** Proprietary | **Author:** Rishi Praseeth Krishnan
 
 ## Executive Summary
 

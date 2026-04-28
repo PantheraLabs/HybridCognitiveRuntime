@@ -1,8 +1,16 @@
 # Project Memory
 
+<div align="center">
+  <img src="../assets/images/logo.png" alt="HCR Logo" width="150"/>
+</div>
+
 ## Project Overview
 
 **Hybrid Cognitive Runtime (HCR)** - A state-based cognitive execution system where intelligence = state, reasoning = state transitions, and knowledge = constraints + causal relationships.
+
+**License**: Proprietary - See [LICENSE](../LICENSE) for full terms
+
+**Author**: Rishi Praseeth Krishnan
 
 ### Core Paradigm Shift
 
