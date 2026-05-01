@@ -4,6 +4,16 @@
   "description": "Resume development sessions without re-explaining context",
   "version": "0.1.0",
   "publisher": "pantheralabs",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PantheraLabs/HybridCognitiveRuntime"
+  },
+  "homepage": "https://github.com/PantheraLabs/HybridCognitiveRuntime#readme",
+  "bugs": {
+    "url": "https://github.com/PantheraLabs/HybridCognitiveRuntime/issues"
+  },
+  "license": "SEE LICENSE IN ../../LICENSE",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -38,6 +48,11 @@
         "command": "hcr.clearState",
         "title": "HCR: Clear Session State",
         "category": "HCR"
+      },
+      {
+        "command": "hcr.startServer",
+        "title": "HCR: Start Engine Server",
+        "category": "HCR"
       }
     ],
     "configuration": {
@@ -58,6 +73,21 @@
           "enum": ["text", "json"],
           "default": "text",
           "description": "Output format for session resume"
+        },
+        "hcr.commandPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to the installed hcr CLI executable. If empty, the extension uses hcr.pythonPath or python."
+        },
+        "hcr.pythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Python executable used to launch the local HCR server when hcr.commandPath is not set."
+        },
+        "hcr.serverPort": {
+          "type": "number",
+          "default": 8733,
+          "description": "Local HTTP port for the HCR engine server."
         }
       }
     },

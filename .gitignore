@@ -24,6 +24,7 @@ wheels/
 # HCR Specific
 .env
 .hcr/
+.hcr_global/
 ! .hcr/config.json.example
 test_google.py
 test_llm_provider.py
@@ -52,6 +53,9 @@ htmlcov/
 
 # Logs
 *.log
+
+# Scratch/Temp
+scratch/
 
 # OS
 Thumbs.db

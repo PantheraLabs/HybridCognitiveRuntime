@@ -51,15 +51,24 @@ class HCRFileEventHandler(FileSystemEventHandler):
     
     def _load_recent_snapshots(self):
         """Pre-load file snapshots for files modified recently"""
-        recent = self.file_watcher.get_recent_files(minutes=60, max_files=50)
-        for file_info in recent:
-            path = file_info["path"]
-            abs_path = self.project_path / path
-            if abs_path.exists():
-                content = self.file_watcher._read_file_content(abs_path)
-                if content is not None:
-                    self.file_watcher._file_snapshots[path] = content
-        self.logger.info(f"Pre-loaded {len(self.file_watcher._file_snapshots)} file snapshots")
+        try:
+            recent = self.file_watcher.get_recent_files(minutes=60, max_files=50)
+            for file_info in recent:
+                try:
+                    path = file_info["path"]
+                    abs_path = self.project_path / path
+                    if abs_path.exists():
+                        content = self.file_watcher._read_file_content(abs_path)
+                        if content is not None:
+                            self.file_watcher._file_snapshots[path] = content
+                except Exception as e:
+                    # Skip files that can't be read
+                    self.logger.debug(f"Could not load snapshot for {file_info.get('path', 'unknown')}: {e}")
+                    continue
+            self.logger.info(f"Pre-loaded {len(self.file_watcher._file_snapshots)} file snapshots")
+        except Exception as e:
+            self.logger.error(f"Failed to load recent snapshots: {e}")
+            # Continue without pre-loaded snapshots
     
     def _should_ignore(self, path: str) -> bool:
         p = Path(path)
@@ -138,7 +147,13 @@ class HCRFileEventHandler(FileSystemEventHandler):
                 return
         
         self.last_event_time[key] = current_time
-        self._report_file_change(rel_path, "modified")
+        
+        # Error boundary: catch all exceptions to prevent daemon crash
+        try:
+            self._report_file_change(rel_path, "modified")
+        except Exception as e:
+            self.logger.error(f"Error processing file change for {rel_path}: {e}")
+            # Don't crash - just skip this file
     
     def on_created(self, event):
         if event.is_directory:

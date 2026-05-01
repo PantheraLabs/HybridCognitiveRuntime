@@ -53,7 +53,7 @@ class HCRDaemon:
             # Check if process exists
             os.kill(pid, 0)
             return True
-        except (ValueError, ProcessLookupError, PermissionError):
+        except (ValueError, ProcessLookupError, PermissionError, OSError):
             return False
 
     def start(self):

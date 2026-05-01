@@ -143,58 +143,66 @@ class FileWatcher:
             old_content: Previous content of the file (if None, will check snapshot)
             
         Returns:
-            FileChange object with detailed diff information
+            FileChange object with detailed diff information, or None on error
         """
-        abs_path = self.project_path / file_path
-        
-        if not abs_path.exists():
-            # File was deleted
+        try:
+            abs_path = self.project_path / file_path
+            
+            if not abs_path.exists():
+                # File was deleted
+                return FileChange(
+                    path=file_path,
+                    change_type='removed',
+                    lines_removed=len((old_content or "").splitlines())
+                )
+            
+            new_content = self._read_file_content(abs_path)
+            if new_content is None:
+                return None  # Binary or unreadable file
+            
+            # Get old content
+            if old_content is None:
+                old_content = self._file_snapshots.get(file_path, "")
+            
+            # Update snapshot
+            self._file_snapshots[file_path] = new_content
+            
+            # Compute diff
+            lines_added, lines_removed, diff_summary = self._compute_diff(old_content, new_content)
+            
+            # Determine change type
+            if not old_content:
+                change_type = 'added'
+            elif lines_added == 0 and lines_removed == 0:
+                change_type = 'unchanged'
+            else:
+                change_type = 'modified'
+            
+            # Extract AST changes for Python files
+            funcs, classes, imports = [], [], []
+            if abs_path.suffix == '.py':
+                try:
+                    changes = self._extract_python_changes(old_content, new_content)
+                    funcs = changes["functions"]
+                    classes = changes["classes"]
+                    imports = changes["imports"]
+                except Exception:
+                    # AST parsing failed - continue without function details
+                    pass
+            
             return FileChange(
                 path=file_path,
-                change_type='removed',
-                lines_removed=len((old_content or "").splitlines())
+                change_type=change_type,
+                lines_added=lines_added,
+                lines_removed=lines_removed,
+                functions_changed=funcs,
+                classes_changed=classes,
+                imports_changed=imports,
+                diff_summary=diff_summary
             )
-        
-        new_content = self._read_file_content(abs_path)
-        if new_content is None:
-            return None  # Binary or unreadable file
-        
-        # Get old content
-        if old_content is None:
-            old_content = self._file_snapshots.get(file_path, "")
-        
-        # Update snapshot
-        self._file_snapshots[file_path] = new_content
-        
-        # Compute diff
-        lines_added, lines_removed, diff_summary = self._compute_diff(old_content, new_content)
-        
-        # Determine change type
-        if not old_content:
-            change_type = 'added'
-        elif lines_added == 0 and lines_removed == 0:
-            change_type = 'unchanged'
-        else:
-            change_type = 'modified'
-        
-        # Extract AST changes for Python files
-        funcs, classes, imports = [], [], []
-        if abs_path.suffix == '.py':
-            changes = self._extract_python_changes(old_content, new_content)
-            funcs = changes["functions"]
-            classes = changes["classes"]
-            imports = changes["imports"]
-        
-        return FileChange(
-            path=file_path,
-            change_type=change_type,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-            functions_changed=funcs,
-            classes_changed=classes,
-            imports_changed=imports,
-            diff_summary=diff_summary
-        )
+        except Exception:
+            # Error boundary: return None on any failure
+            return None
     
     def get_recent_files(self, minutes: int = 60, max_files: int = 20) -> List[Dict[str, Any]]:
         """

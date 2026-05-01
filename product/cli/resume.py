@@ -25,6 +25,7 @@ Examples:
 import sys
 import os
 import argparse
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -93,6 +94,40 @@ def format_output_json(context) -> str:
     return json.dumps(context.to_dict(), indent=2)
 
 
+def _ensure_daemon_running(project_path: str):
+    """Auto-start daemon if not running - ensures background tracking"""
+    try:
+        from product.daemon.hcr_daemon import HCRDaemon
+        daemon = HCRDaemon(project_path)
+        
+        if not daemon.is_already_running():
+            popen_kwargs = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+            }
+            if sys.platform == "win32":
+                creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                if creationflags:
+                    popen_kwargs["creationflags"] = creationflags
+            else:
+                popen_kwargs["start_new_session"] = True
+            try:
+                subprocess.Popen(
+                    [sys.executable, "-m", "product.daemon.hcr_daemon", "start", "--project", project_path],
+                    **popen_kwargs
+                )
+            except OSError:
+                popen_kwargs.pop("creationflags", None)
+                popen_kwargs.pop("start_new_session", None)
+                subprocess.Popen(
+                    [sys.executable, "-m", "product.daemon.hcr_daemon", "start", "--project", project_path],
+                    **popen_kwargs
+                )
+    except Exception:
+        # Continue without daemon
+        pass
+
+
 def run_resume(project_path: str, output_format: str = "text") -> str:
     """
     Run resume using Engine API directly.
@@ -104,6 +139,9 @@ def run_resume(project_path: str, output_format: str = "text") -> str:
     Returns:
         Formatted output string
     """
+    # Auto-start daemon for background tracking
+    _ensure_daemon_running(project_path)
+    
     # Initialize engine
     engine = HCREngine(project_path)
     
@@ -250,6 +288,13 @@ def main():
     )
     
     parser.add_argument(
+        "--port",
+        type=int,
+        default=8733,
+        help="HTTP server port when using --server"
+    )
+    
+    parser.add_argument(
         "--graph",
         action="store_true",
         help="Visualize the Temporal Causal Graph"
@@ -273,7 +318,7 @@ def main():
         if args.server:
             # Start HTTP server
             print(f"[HCR] Starting engine server for: {args.project}")
-            start_server(args.project)
+            start_server(args.project, args.port)
         elif args.dashboard:
             from src.web.dashboard import launch_dashboard
             launch_dashboard()

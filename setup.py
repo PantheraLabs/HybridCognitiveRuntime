@@ -1,17 +1,20 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
+
 
 setup(
     name="hcr",
     version="0.2.0",
-    description="Hybrid Cognitive Runtime — State-based cognitive execution system",
+    description="Hybrid Cognitive Runtime - State-based cognitive execution system",
     author="Rishi Praseeth Krishnan",
     url="https://github.com/PantheraLabs/HybridCognitiveRuntime",
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[
         "requests>=2.28.0",
+        "python-dotenv>=1.0.1",
         "pyyaml>=6.0",
         "rich>=13.0",
+        "watchdog>=4.0.0",
     ],
     extras_require={
         "groq": ["groq>=0.11.0"],

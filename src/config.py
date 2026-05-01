@@ -48,6 +48,35 @@ class HCRConfig:
     anthropic_model: str = "claude-3-5-haiku-latest"
     ollama_host: str = "http://localhost:11434"
 
+    def validate(self) -> list[str]:
+        """Validate configuration and return list of error messages."""
+        errors = []
+        
+        valid_providers = {"groq", "google", "ollama", "openai", "anthropic"}
+        if self.llm_provider not in valid_providers:
+            errors.append(f"Invalid llm_provider '{self.llm_provider}'. Must be one of: {valid_providers}")
+        
+        if not (0.0 <= self.llm_temperature <= 2.0):
+            errors.append(f"llm_temperature must be between 0.0 and 2.0, got {self.llm_temperature}")
+        
+        if self.llm_max_tokens < 1 or self.llm_max_tokens > 32000:
+            errors.append(f"llm_max_tokens must be between 1 and 32000, got {self.llm_max_tokens}")
+        
+        if self.cache_ttl_seconds < 1:
+            errors.append(f"cache_ttl_seconds must be >= 1, got {self.cache_ttl_seconds}")
+        
+        if self.engine_port < 1024 or self.engine_port > 65535:
+            errors.append(f"engine_port must be between 1024 and 65535, got {self.engine_port}")
+        
+        if self.project_path and not Path(self.project_path).exists():
+            errors.append(f"project_path does not exist: {self.project_path}")
+        
+        return errors
+    
+    def is_valid(self) -> bool:
+        """Check if configuration is valid."""
+        return len(self.validate()) == 0
+    
     def get_model(self) -> str:
         """Get the active model name, falling back to provider default"""
         if self.llm_model:
@@ -125,7 +154,8 @@ def _merge_from_file(config: HCRConfig, path: Path):
             if hasattr(config, key):
                 setattr(config, key, value)
     except (json.JSONDecodeError, IOError) as e:
-        print(f"[HCR Config] Warning: Could not read {path}: {e}")
+        import logging
+        logging.getLogger("HCRConfig").warning(f"Could not read {path}: {e}")
 
 
 def _merge_from_env(config: HCRConfig):

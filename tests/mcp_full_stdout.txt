@@ -1,0 +1,49 @@
+[HCR Engine] Replaying 135 causal events...
+Engine initialized: True
+Persistence initialized: True
+Cross-project initialized: True
+
+Testing hcr_get_system_health... [HCR Engine] LLM provider: groq (llama-3.1-8b-instant)
+OK
+Testing hcr_get_version_history... OK
+Testing hcr_list_shared_states... OK
+Testing hcr_get_shared_state... OK
+Testing hcr_get_learned_operators... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_list_sessions... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_capture_full_context... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_create_session... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_set_session_note... OK
+Testing hcr_merge_session... OK
+Testing hcr_get_current_task... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_get_next_action... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_get_state... OK
+Testing hcr_get_causal_graph... OK
+Testing hcr_get_recent_activity... OK
+Testing hcr_share_state... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_restore_version... OK
+Testing hcr_record_file_edit... OK
+Testing hcr_analyze_impact... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_get_recommendations... [HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>
+OK
+Testing hcr_search_history... OK
+
+Results: 21 passed, 0 failed out of 21 tools
+[HCR Engine] Error saving state: 'charmap' codec can't encode character '\u2192' in position 31: character maps to <undefined>

@@ -5,10 +5,15 @@ Clean interface for all HCR operations.
 Both CLI and IDE call these methods directly.
 NO subprocess, NO shell execution.
 
-Now with LLM-powered context inference.
+Now with LLM-powered context inference and state compression (k2.6).
 """
 
+import gzip
 import json
+import logging
+import os
+import tempfile
+import threading
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -92,6 +97,7 @@ class HCREngine:
         self.project_path = Path(project_path)
         self.hcr_dir = self.project_path / ".hcr"
         self.state_file = self.hcr_dir / "state.json"
+        self.logger = logging.getLogger("HCREngine")
 
         # Load config
         self.config = config or load_config(project_path)
@@ -121,18 +127,28 @@ class HCREngine:
         self.profile_manager = ProfileManager(str(self.project_path))
         self.friction_detector = FrictionDetector()
         self.workflow_predictor = WorkflowPredictor(self.event_store)
-        self._replay_causal_events()
+        # NOTE: Event replay is deferred to first load_state() call to avoid blocking init
+        self._events_replayed = False
+        self._state_lock = threading.RLock()
 
     def _replay_causal_events(self):
-        """Replay events from EventStore to rebuild in-memory Causal Graph and Symbolic Facts"""
-        print(f"[HCR Engine] Replaying {len(self.event_store.events)} causal events...")
+        """Replay events from EventStore to rebuild in-memory Causal Graph and Symbolic Facts.
+        Called lazily on first load_state() to avoid blocking engine initialization.
+        NOTE: Skips expensive AST parsing during batch replay for performance.
+        Dependency graph rebuilds incrementally from new file edits."""
+        if self._events_replayed:
+            return
+        
+        self._events_replayed = True
+        self.logger.info(f"Replaying {len(self.event_store.events)} causal events (fast mode)...")
         
         # Ensure we have a state to populate
         if not self._current_state:
             self._current_state = CognitiveState()
 
+        # Batch restore symbolic facts only - skip expensive AST parsing
+        # The causal graph will rebuild incrementally from new edits
         for event in self.event_store.events:
-            # 1. Restore Symbolic Facts for continuity
             if event.event_type == "file_edit":
                 fact = f"edited:{event.source}"
             elif event.event_type == "terminal":
@@ -144,16 +160,8 @@ class HCREngine:
 
             if fact and fact not in self._current_state.symbolic.facts:
                 self._current_state.symbolic.facts.append(fact)
-
-            # 2. Rebuild Dependency Graph (Python only)
-            if event.event_type == "file_edit":
-                file_path = event.source
-                abs_path = self.project_path / file_path
-                if abs_path.exists() and abs_path.suffix == '.py':
-                    deps = extract_dependencies(abs_path)
-                    all_deps = deps["imports"] + deps["calls"]
-                    if all_deps:
-                        self.dependency_graph.update_file_dependencies(file_path, all_deps)
+        
+        self.logger.info(f"Restored {len(self._current_state.symbolic.facts)} symbolic facts.")
 
     def _get_llm_provider(self):
         """Lazy-initialize the LLM provider"""
@@ -167,9 +175,9 @@ class HCREngine:
                     api_key=self.config.get_api_key(),
                     host=self.config.ollama_host,
                 )
-                print(f"[HCR Engine] LLM provider: {self.config.llm_provider} ({self.config.get_model()})")
+                self.logger.info(f"LLM provider: {self.config.llm_provider} ({self.config.get_model()})")
             except Exception as e:
-                print(f"[HCR Engine] LLM not available ({e}). Using heuristic fallback.")
+                self.logger.warning(f"LLM not available ({e}). Using heuristic fallback.")
                 self._llm_provider = None
         return self._llm_provider
 
@@ -198,14 +206,29 @@ class HCREngine:
     def load_state(self) -> Optional[CognitiveState]:
         """
         Load cognitive state from disk.
+        Supports both gzip-compressed (k2.6) and plain JSON files.
         Returns None if no state exists.
         """
         try:
-            if not self.state_file.exists():
-                return None
-
-            with open(self.state_file, 'r') as f:
-                data = json.load(f)
+            with self._state_lock:
+                if not self.state_file.exists():
+                    # Fallback to uncompressed debug file if present
+                    debug_file = self.state_file.with_suffix('.json')
+                    if debug_file.exists():
+                        with open(debug_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                    else:
+                        return None
+                else:
+                    # k2.6: Try gzip first, fall back to plain JSON
+                    raw = self.state_file.read_bytes()
+                    try:
+                        decompressed = gzip.decompress(raw)
+                        data = json.loads(decompressed.decode('utf-8'))
+                    except (gzip.BadGzipFile, OSError, ValueError):
+                        # Not gzip - try plain JSON
+                        with open(self.state_file, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
 
             # Parse unified state format (v2.0)
             if "state" in data:
@@ -221,10 +244,14 @@ class HCREngine:
                 self._current_state = self._reconstruct_state_from_legacy(data)
                 self._last_saved = datetime.now()
             
+            # Lazily replay causal events to rebuild graph (non-blocking for init)
+            if not self._events_replayed:
+                self._replay_causal_events()
+            
             return self._current_state
 
         except Exception as e:
-            print(f"[HCR Engine] Error loading state: {e}")
+            self.logger.warning(f"Error loading state: {e}")
             return None
 
     def _deduplicate_facts(self, facts: List[str], max_facts: int = 100) -> List[str]:
@@ -254,38 +281,59 @@ class HCREngine:
         return unique[-max_facts:]
     
     def save_state(self) -> bool:
-        """Save current cognitive state to disk with deduplication"""
+        """Save current cognitive state to disk with deduplication, atomic writes, and compression (k2.6)."""
         try:
-            self.hcr_dir.mkdir(exist_ok=True)
-            
-            # Clean up state before saving
-            if self._current_state and hasattr(self._current_state, 'symbolic'):
-                original_count = len(self._current_state.symbolic.facts)
-                self._current_state.symbolic.facts = self._deduplicate_facts(
-                    self._current_state.symbolic.facts, max_facts=100
-                )
-                if original_count != len(self._current_state.symbolic.facts):
-                    print(f"[HCR Engine] Cleaned facts: {original_count} → {len(self._current_state.symbolic.facts)}")
+            with self._state_lock:
+                self.hcr_dir.mkdir(exist_ok=True)
 
-            # Build unified state format (v2.0)
-            data = {
-                "version": "2.0.0",
-                "saved_at": datetime.now().isoformat(),
-                "project_path": str(self.project_path),
-                "state": self._current_state.to_dict() if self._current_state else {},
-                "metadata": {
-                    "fact_count": len(self._current_state.symbolic.facts) if self._current_state else 0,
-                    "last_saved": datetime.now().isoformat()
+                # Clean up state before saving
+                if self._current_state and hasattr(self._current_state, 'symbolic'):
+                    original_count = len(self._current_state.symbolic.facts)
+                    self._current_state.symbolic.facts = self._deduplicate_facts(
+                        self._current_state.symbolic.facts, max_facts=100
+                    )
+                    if original_count != len(self._current_state.symbolic.facts):
+                        self.logger.info(f"Cleaned facts: {original_count} -> {len(self._current_state.symbolic.facts)}")
+
+                # Build unified state format (v2.0)
+                data = {
+                    "version": "2.0.0",
+                    "saved_at": datetime.now().isoformat(),
+                    "project_path": str(self.project_path),
+                    "state": self._current_state.to_dict() if self._current_state else {},
+                    "metadata": {
+                        "fact_count": len(self._current_state.symbolic.facts) if self._current_state else 0,
+                        "last_saved": datetime.now().isoformat(),
+                        "compression": "gzip"
+                    }
                 }
-            }
 
-            with open(self.state_file, 'w') as f:
-                json.dump(data, f, indent=2)
+                # ATOMIC WRITE: write to temp file, then rename
+                temp_fd, temp_name = tempfile.mkstemp(prefix='hcr_state_', dir=self.hcr_dir)
+                temp_file = Path(temp_name)
+                try:
+                    json_bytes = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                    compressed = gzip.compress(json_bytes, compresslevel=6)
+                    with os.fdopen(temp_fd, 'wb') as f:
+                        f.write(compressed)
+                        f.flush()
+                        os.fsync(f.fileno())
 
-            return True
+                    os.replace(temp_file, self.state_file)
+
+                    debug_file = self.state_file.with_suffix('.json')
+                    with open(debug_file, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+
+                    self._last_saved = datetime.now()
+                    return True
+                except Exception:
+                    if temp_file.exists():
+                        temp_file.unlink(missing_ok=True)
+                    raise
 
         except Exception as e:
-            print(f"[HCR Engine] Error saving state: {e}")
+            self.logger.error(f"Error saving state: {e}")
             return False
 
     def update_from_environment(self, event: EngineEvent) -> CognitiveState:
@@ -322,8 +370,10 @@ class HCREngine:
         # Invalidate cache since state changed
         self._cache.invalidate()
 
-        # Save updated state
-        self.save_state()
+        # Avoid rewriting project state for every MCP read/query.
+        # File edits, commits, terminal events, and manual updates still persist immediately.
+        if event.event_type != "mcp_tool_call":
+            self.save_state()
 
         return self._current_state
 
@@ -455,10 +505,13 @@ class HCREngine:
                 except Exception:
                     continue
 
-    def infer_context(self) -> EngineContext:
+    def infer_context(self, use_llm: bool = True) -> EngineContext:
         """
         Infer current context from state.
-        Uses LLM if available, with caching to avoid redundant calls.
+        Uses LLM if available and use_llm=True, with caching to avoid redundant calls.
+
+        Args:
+            use_llm: Whether to use LLM for inference (default True). Set False for fast heuristic-only inference.
 
         Returns:
             Context object for UI display
@@ -485,21 +538,22 @@ class HCREngine:
         # Get relevant facts (use the most recent ones for inference)
         facts = self._current_state.symbolic.facts[-20:]
 
-        # Try LLM-powered inference (with cache)
-        llm = self._get_llm_provider()
-        if llm:
-            llm_result = self._infer_with_llm(llm)
-            if llm_result:
-                return EngineContext(
-                    current_task=llm_result.get("current_task", "Unknown"),
-                    progress_percent=llm_result.get("progress_percent", 50),
-                    next_action=llm_result.get("next_action", "Continue working"),
-                    confidence=llm_result.get("confidence", self._current_state.meta.confidence),
-                    gap_minutes=gap,
-                    facts=facts,
-                )
+        # Try LLM-powered inference (with cache) - only if explicitly requested
+        if use_llm:
+            llm = self._get_llm_provider()
+            if llm:
+                llm_result = self._infer_with_llm(llm)
+                if llm_result:
+                    return EngineContext(
+                        current_task=llm_result.get("current_task", "Unknown"),
+                        progress_percent=llm_result.get("progress_percent", 50),
+                        next_action=llm_result.get("next_action", "Continue working"),
+                        confidence=llm_result.get("confidence", self._current_state.meta.confidence),
+                        gap_minutes=gap,
+                        facts=facts,
+                    )
 
-        # Fallback to heuristic inference
+        # Fast heuristic inference (no LLM)
         task = self._extract_task()
         progress = self._calculate_progress()
         next_action = self._extract_next_action()
@@ -545,7 +599,7 @@ class HCREngine:
                 return result
 
         except Exception as e:
-            print(f"[HCR Engine] LLM inference failed: {e}")
+            self.logger.warning(f"LLM inference failed: {e}")
 
         return None
 
@@ -683,7 +737,7 @@ class HCREngine:
             self._cache.invalidate()
             return True
         except Exception as e:
-            print(f"[HCR Engine] Error clearing state: {e}")
+            self.logger.warning(f"Error clearing state: {e}")
             return False
 
     def _reconstruct_state_from_legacy(self, data: Dict[str, Any]) -> CognitiveState:

@@ -23,6 +23,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, asdict
 import threading
 import shutil
+import tempfile
 
 
 @dataclass
@@ -140,8 +141,8 @@ class DevStatePersistence:
                 encrypted = self._encrypt_state(compressed)
                 
                 # Save to main state file (uncompressed for immediate access)
-                with open(self.state_file, 'w') as f:
-                    json.dump(state, f, indent=2)
+                with open(self.state_file, 'w', encoding='utf-8') as f:
+                    json.dump(state, f, indent=2, ensure_ascii=False)
                 
                 # Save compressed version for archival
                 archive_file = self.history_dir / f"state_{state_hash}.json.gz"
@@ -179,8 +180,8 @@ class DevStatePersistence:
         
         # Save versions
         versions_data = [asdict(v) for v in versions]
-        with open(self.versions_file, 'w') as f:
-            json.dump(versions_data, f, indent=2)
+        with open(self.versions_file, 'w', encoding='utf-8') as f:
+            json.dump(versions_data, f, indent=2, ensure_ascii=False)
     
     def _load_versions(self) -> List[StateVersion]:
         """Load version history"""
@@ -188,7 +189,7 @@ class DevStatePersistence:
             return []
         
         try:
-            with open(self.versions_file, 'r') as f:
+            with open(self.versions_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 return [StateVersion(**v) for v in data]
         except:
@@ -231,8 +232,8 @@ class DevStatePersistence:
         try:
             graph_file = self.causal_dir / f"{graph_name}_graph.json"
             
-            with open(graph_file, 'w') as f:
-                json.dump(asdict(graph), f, indent=2)
+            with open(graph_file, 'w', encoding='utf-8') as f:
+                json.dump(asdict(graph), f, indent=2, ensure_ascii=False)
             
             return True
         except Exception as e:
@@ -247,7 +248,7 @@ class DevStatePersistence:
             return None
         
         try:
-            with open(graph_file, 'r') as f:
+            with open(graph_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 return CausalGraphState(**data)
         except Exception as e:
@@ -265,7 +266,7 @@ class DevStatePersistence:
             if not self.state_file.exists():
                 return None
             
-            with open(self.state_file, 'r') as f:
+            with open(self.state_file, 'r', encoding='utf-8') as f:
                 state = json.load(f)
             
             return state
@@ -322,12 +323,7 @@ class CrossProjectStateManager:
     """
     
     def __init__(self, hcr_global_dir: Optional[Path] = None):
-        # Use global HCR directory in home folder
-        if hcr_global_dir is None:
-            home = Path.home()
-            self.global_dir = home / ".hcr_global"
-        else:
-            self.global_dir = Path(hcr_global_dir)
+        self.global_dir = self._resolve_global_dir(hcr_global_dir)
         
         self.registry_file = self.global_dir / "project_registry.json"
         self.shared_state_dir = self.global_dir / "shared_states"
@@ -336,6 +332,30 @@ class CrossProjectStateManager:
         self._ensure_global_dirs()
         self._project_registry: Dict[str, ProjectStateMetadata] = {}
         self._load_registry()
+
+    def _resolve_global_dir(self, hcr_global_dir: Optional[Path]) -> Path:
+        """Pick a writable global storage directory with safe fallbacks."""
+        candidates: List[Path] = []
+        if hcr_global_dir is not None:
+            candidates.append(Path(hcr_global_dir))
+        env_dir = os.environ.get("HCR_GLOBAL_DIR")
+        if env_dir:
+            candidates.append(Path(env_dir))
+        candidates.append(Path.home() / ".hcr_global")
+        candidates.append(Path(tempfile.gettempdir()) / "hcr_global")
+
+        for candidate in candidates:
+            try:
+                candidate.mkdir(parents=True, exist_ok=True)
+                probe = candidate / ".write_test"
+                with open(probe, 'w', encoding='utf-8') as f:
+                    f.write("ok")
+                probe.unlink(missing_ok=True)
+                return candidate
+            except OSError:
+                continue
+
+        raise PermissionError("No writable directory available for HCR global state")
     
     def _ensure_global_dirs(self):
         """Ensure global HCR directories exist"""
@@ -347,7 +367,7 @@ class CrossProjectStateManager:
         """Load project registry from disk"""
         if self.registry_file.exists():
             try:
-                with open(self.registry_file, 'r') as f:
+                with open(self.registry_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     for project_id, metadata_dict in data.items():
                         self._project_registry[project_id] = ProjectStateMetadata(**metadata_dict)
@@ -360,8 +380,8 @@ class CrossProjectStateManager:
             project_id: asdict(metadata) 
             for project_id, metadata in self._project_registry.items()
         }
-        with open(self.registry_file, 'w') as f:
-            json.dump(data, f, indent=2)
+        with open(self.registry_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
     
     def register_project(self, project_path: str, project_name: str, 
                         shared_keys: Optional[List[str]] = None) -> str:
@@ -425,8 +445,8 @@ class CrossProjectStateManager:
             }
             
             shared_file = self.shared_state_dir / f"{key}.json"
-            with open(shared_file, 'w') as f:
-                json.dump(shared_state, f, indent=2)
+            with open(shared_file, 'w', encoding='utf-8') as f:
+                json.dump(shared_state, f, indent=2, ensure_ascii=False)
             
             return True
         except Exception as e:
@@ -441,7 +461,7 @@ class CrossProjectStateManager:
             return None
         
         try:
-            with open(shared_file, 'r') as f:
+            with open(shared_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
             return None
@@ -523,8 +543,8 @@ class CrossProjectStateManager:
                 "use_count": 0
             }
             
-            with open(operator_file, 'w') as f:
-                json.dump(operator_record, f, indent=2)
+            with open(operator_file, 'w', encoding='utf-8') as f:
+                json.dump(operator_record, f, indent=2, ensure_ascii=False)
             
             return True
         except Exception as e:
@@ -539,7 +559,7 @@ class CrossProjectStateManager:
             return None
         
         try:
-            with open(operator_file, 'r') as f:
+            with open(operator_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except:
             return None

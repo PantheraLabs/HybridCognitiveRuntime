@@ -25,6 +25,7 @@ import os
 import json
 import argparse
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional, List, Dict
 from dataclasses import dataclass
@@ -131,8 +132,8 @@ def install_mcp_config(ide: str, project_path: str, mcp_server_path: str):
     
     # Add HCR server
     config["mcpServers"]["hcr"] = {
-        "command": "python",
-        "args": [mcp_server_path],
+        "command": sys.executable,
+        "args": ["-u", mcp_server_path, "--project", project_path],
         "env": {
             "HCR_PROJECT": project_path
         }
@@ -168,6 +169,23 @@ def detect_installed_ides() -> List[str]:
                 ides.append("claude")
     
     return ides
+
+
+def launch_background_python(module_args: List[str]):
+    """Launch a detached background Python process across platforms."""
+    popen_kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        creationflags = 0
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        popen_kwargs["creationflags"] = creationflags
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    subprocess.Popen([sys.executable, *module_args], **popen_kwargs)
 
 
 def cmd_init(args):
@@ -226,7 +244,7 @@ def cmd_init(args):
     if args.setup_ide or args.auto:
         print("\n🖥️  Setting up IDE integrations...")
         
-        mcp_server = Path(__file__).parent.parent / "integrations" / "mcp_server.py"
+        mcp_server = Path(__file__).parent.parent.parent / "mcp_server_wrapper.py"
         
         if args.auto:
             # Auto-detect installed IDEs
@@ -245,8 +263,13 @@ def cmd_init(args):
     # Start daemon if requested
     if args.daemon:
         print("\n🚀 Starting background daemon...")
-        # TODO: Implement daemon start
-        print("   (Daemon start not yet implemented)")
+        from product.daemon.hcr_daemon import HCRDaemon
+        daemon = HCRDaemon(str(project_path))
+        if daemon.is_already_running():
+            print("   [OK] Daemon already running")
+        else:
+            launch_background_python(["-m", "product.daemon.hcr_daemon", "start", "--project", str(project_path)])
+            print("   [OK] Daemon started in background")
     
     # Initial state capture
     print("\n📊 Capturing initial state...")
@@ -279,11 +302,14 @@ def cmd_resume(args):
     
     project_path = args.project or str(Path.cwd())
     
-    # Check if initialized
     hcr_dir = get_hcr_dir(project_path)
-    if not hcr_dir.exists():
-        print("[Error] HCR not initialized. Run: hcr init")
-        return 1
+    hcr_dir.mkdir(exist_ok=True)
+
+    if args.server:
+        from product.cli.resume import start_server
+        print(f"[HCR] Starting engine server for: {project_path}")
+        start_server(project_path, args.port)
+        return 0
     
     output = run_resume(project_path, args.format)
     print(output)
@@ -321,25 +347,34 @@ def cmd_status(args):
 
 def cmd_daemon(args):
     """Control HCR background daemon"""
+    from product.daemon.hcr_daemon import HCRDaemon
+    
+    project_path = args.project or str(Path.cwd())
+    daemon = HCRDaemon(project_path)
+    
     if args.daemon_command == "install":
         print("📦 Installing daemon...")
-        # TODO: Platform-specific service install
-        print("   (Not yet implemented)")
+        print("   Daemon runs as user process (no system install needed)")
+        print(f"   Run 'hcr daemon start' to start daemon for {project_path}")
     
     elif args.daemon_command == "start":
         print("🚀 Starting daemon...")
-        # TODO: Start service
-        print("   (Not yet implemented)")
+        if daemon.is_already_running():
+            print("   [OK] Daemon is already running")
+            daemon.status()
+        else:
+            # Start in background subprocess
+            launch_background_python(["-m", "product.daemon.hcr_daemon", "start", "--project", project_path])
+            print("   [OK] Daemon started in background")
+            time.sleep(1)  # Brief wait for startup
+            daemon.status()
     
     elif args.daemon_command == "stop":
-        print("🛑 Stopping daemon...")
-        # TODO: Stop service
-        print("   (Not yet implemented)")
+        print("� Stopping daemon...")
+        daemon.stop()
     
     elif args.daemon_command == "status":
-        print("📊 Daemon status...")
-        # TODO: Check service status
-        print("   (Not yet implemented)")
+        daemon.status()
 
 
 def cmd_dashboard(args):
@@ -354,7 +389,7 @@ def cmd_setup_ide(args):
     print("🖥️  Setting up IDE integration...")
     
     project_path = args.project or str(Path.cwd())
-    mcp_server = Path(__file__).parent.parent.parent / "mcp_server_stdio.py"
+    mcp_server = Path(__file__).parent.parent.parent / "mcp_server_wrapper.py"
     
     if args.ide:
         install_mcp_config(args.ide, project_path, str(mcp_server))
@@ -371,6 +406,42 @@ def cmd_setup_ide(args):
         print(f"Supported: {', '.join(get_mcp_config_paths().keys())}")
 
 
+def cmd_explain(args):
+    """Show what context HCR injects and why"""
+    from product.cli.explain import run_explain
+    project_path = args.project or str(Path.cwd())
+    output = run_explain(project_path, full=args.full)
+    print(output)
+
+
+def cmd_memory(args):
+    """Manual memory management: pin, forget, reset, list"""
+    from product.cli.commands import cmd_pin, cmd_forget, cmd_reset, cmd_list_facts
+    project_path = args.project or str(Path.cwd())
+    
+    if args.action == "pin":
+        if not args.value:
+            print("[Error] Provide fact to pin: hcr memory pin 'Use FastAPI'")
+            return
+        print(cmd_pin(project_path, args.value))
+    elif args.action == "forget":
+        if not args.value:
+            print("[Error] Provide index or text: hcr memory forget 3")
+            return
+        print(cmd_forget(project_path, args.value))
+    elif args.action == "reset":
+        print(cmd_reset(project_path, force=args.force))
+    elif args.action == "list":
+        print(cmd_list_facts(project_path))
+
+
+def cmd_doctor(args):
+    """Run install/startup diagnostics."""
+    from product.cli.doctor import run_doctor
+    project_path = args.project or str(Path.cwd())
+    print(run_doctor(project_path, as_json=args.format == "json"))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="HCR - Hybrid Cognitive Runtime",
@@ -381,6 +452,12 @@ Examples:
     hcr resume                # Resume session
     hcr status                # Check status
     hcr dashboard             # Open web UI
+    hcr explain               # Show injected context
+    hcr doctor                # Diagnose install/runtime issues
+    hcr memory pin "Use FastAPI"  # Pin a fact
+    hcr memory list           # List facts
+    hcr memory forget 3       # Remove fact #3
+    hcr memory reset --force  # Clear all state
         """
     )
     
@@ -399,10 +476,21 @@ Examples:
     resume_parser.add_argument("--project", "-p", help="Project path")
     resume_parser.add_argument("--format", "-f", choices=["text", "json"], default="text")
     resume_parser.add_argument("--server", "-s", action="store_true", help="Start engine server")
+    resume_parser.add_argument("--port", type=int, default=8733, help="HTTP server port when using --server")
+    
+    # explain command
+    explain_parser = subparsers.add_parser("explain", help="Show what context HCR injects and why")
+    explain_parser.add_argument("--project", "-p", help="Project path")
+    explain_parser.add_argument("--full", action="store_true", help="Show all available context")
     
     # status command
     status_parser = subparsers.add_parser("status", help="Check HCR status")
     status_parser.add_argument("--project", "-p", help="Project path")
+
+    # doctor command
+    doctor_parser = subparsers.add_parser("doctor", help="Run HCR diagnostics")
+    doctor_parser.add_argument("--project", "-p", help="Project path")
+    doctor_parser.add_argument("--format", choices=["text", "json"], default="text", help="Output format")
     
     # daemon command
     daemon_parser = subparsers.add_parser("daemon", help="Control background daemon")
@@ -416,6 +504,13 @@ Examples:
     setup_parser.add_argument("--ide", "-i", help="IDE name (windsurf, claude, cursor)")
     setup_parser.add_argument("--auto", "-a", action="store_true", help="Auto-detect IDEs")
     setup_parser.add_argument("--project", "-p", help="Project path")
+    
+    # memory command (pin/forget/reset/list-facts)
+    memory_parser = subparsers.add_parser("memory", help="Manage HCR memory manually")
+    memory_parser.add_argument("action", choices=["pin", "forget", "reset", "list"], help="Memory action")
+    memory_parser.add_argument("--project", "-p", help="Project path")
+    memory_parser.add_argument("--force", "-f", action="store_true", help="Force reset without confirmation")
+    memory_parser.add_argument("value", nargs="?", help="Fact text or index for pin/forget")
     
     args = parser.parse_args()
     
@@ -436,6 +531,12 @@ Examples:
             cmd_dashboard(args)
         elif args.command == "setup-ide":
             cmd_setup_ide(args)
+        elif args.command == "explain":
+            cmd_explain(args)
+        elif args.command == "memory":
+            cmd_memory(args)
+        elif args.command == "doctor":
+            cmd_doctor(args)
     except KeyboardInterrupt:
         print("\n\nInterrupted")
         return 0

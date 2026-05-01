@@ -122,6 +122,13 @@ print(f"Next Action: {context.next_action}")
 python -m product.cli.resume --project .
 ```
 
+### Diagnostics
+
+```bash
+hcr doctor
+hcr doctor --format json
+```
+
 ## ✅ Testing
 
 ```bash

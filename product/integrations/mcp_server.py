@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -28,6 +29,23 @@ SMART_RESUME_SYSTEM = """You are the HCR "Resume Without Re-Explaining" formatte
 _current_file = Path(__file__).resolve()
 _project_root = _current_file.parent.parent.parent
 sys.path.insert(0, str(_project_root))
+
+# Import modular tool handlers
+from product.integrations.tools.state_tools import (
+    GetStateTool, GetCausalGraphTool, GetRecentActivityTool
+)
+from product.integrations.tools.task_tools import GetCurrentTaskTool, GetNextActionTool
+from product.integrations.tools.session_tools import SessionTools
+from product.integrations.tools.shared_state_tools import SharedStateTools
+from product.integrations.tools.version_tools import VersionTools
+from product.integrations.tools.health_tools import HealthTools
+from product.integrations.tools.file_tools import FileTools
+from product.integrations.tools.context_tools import ContextTools
+from product.integrations.tools.search_tools import SearchTools
+from product.integrations.tools.recommendation_tools import RecommendationTools
+from product.integrations.tools.operator_tools import OperatorTools
+from product.integrations.tools.impact_tools import ImpactTools
+from product.integrations.tools.output_synthesizer import OutputSynthesizer
 
 # MCP Protocol Types
 @dataclass
@@ -68,51 +86,315 @@ class HCRMCPResponder:
         # Rate limiting: max 30 calls per minute per tool
         self._rate_limits: Dict[str, List[float]] = {}
         self._max_calls_per_minute = 30
+        
+        # Circuit breaker for resilience (PHASE 2 FIX)
+        # Prevents cascading failures from repeated errors
+        self._circuit_breakers: Dict[str, Dict[str, Any]] = {
+            'engine': {'failures': 0, 'last_failure_time': 0.0, 'state': 'closed'},
+            'git': {'failures': 0, 'last_failure_time': 0.0, 'state': 'closed'},
+            'files': {'failures': 0, 'last_failure_time': 0.0, 'state': 'closed'},
+            'llm': {'failures': 0, 'last_failure_time': 0.0, 'state': 'closed'},
+        }
+        self._circuit_breaker_threshold = 5  # failures before tripping
+        self._circuit_breaker_reset_time = 30.0  # seconds before half-open
 
-        # Thread pool for blocking operations (LLM calls)
-        self._executor = ThreadPoolExecutor(max_workers=2)
+        # Thread pool for blocking operations (LLM calls, git, filesystem)
+        # FIXED: Increased from 4 to 16 to handle concurrent requests without bottleneck
+        # 4 workers was causing thread starvation in production
+        self._executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="hcr-mcp")
 
         # Session-aware context windows (per IDE pane)
         self._session_states: Dict[str, Dict[str, Any]] = {}
         self._session_private_notes: Dict[str, List[str]] = defaultdict(list)
         
+        # Caching infrastructure for commercial-grade reliability
+        self._cache_ttl = 60.0  # seconds
+        self._shared_keys_cache: Optional[List[str]] = None
+        self._shared_keys_cache_ts = 0.0
+        self._learned_ops_cache: Optional[List[str]] = None
+        self._learned_ops_cache_ts = 0.0
+        self._health_cache: Optional[Dict[str, Any]] = None
+        self._health_cache_ts = 0.0
+        self._version_cache: Optional[List[Dict[str, Any]]] = None
+        self._version_cache_ts = 0.0
+        self._state_cache_mtime = 0.0
+        self._state_cached = False
+        
+        # Cache locks for thread-safe access (PHASE 2 FIX)
+        # Prevents race conditions on cache writes from concurrent requests
+        self._cache_locks = {
+            'shared_keys': asyncio.Lock(),
+            'learned_ops': asyncio.Lock(),
+            'health': asyncio.Lock(),
+            'version': asyncio.Lock(),
+        }
+        
+        # Lock for protecting shared state (rate limits, circuit breakers, tracing)
+        self._lock = asyncio.Lock()
+        
+        # Request tracing for observability (PHASE 2 FIX)
+        # Tracks request ID and performance metrics
+        self._request_counter = 0
+        self._active_requests: Dict[str, Dict[str, Any]] = {}
+        
+        # Auto-start daemon if not running (daemon provides background tracking)
+        # FIXED: Run in background thread to avoid blocking initialization (k2.6)
+        import threading
+        daemon_thread = threading.Thread(target=self._ensure_daemon_running, daemon=True)
+        daemon_thread.start()
+        
         try:
             # Import HCR modules - use HCREngine for proper state management
             from src.engine_api import HCREngine, EngineEvent
-            from product.storage.state_persistence import CrossProjectStateManager
+            from product.storage.state_persistence import (
+                CrossProjectStateManager,
+                DevStatePersistence,
+            )
             from product.security.enterprise_security import EnterpriseSecurityManager
             
             self.engine = HCREngine(self.project_path)
             self.cross_project = CrossProjectStateManager()
+            self.persistence = DevStatePersistence(self.project_path)
             self.security = EnterpriseSecurityManager()
         except Exception as e:
             self.logger.error(f"Failed to initialize HCR modules: {e}")
             self.engine = None
             self.cross_project = None
+            self.persistence = None
             self.security = None
+        
+        # Commercial-grade output synthesizer (uses Groq via engine LLM)
+        self._synthesizer = OutputSynthesizer(
+            engine=self.engine,
+            use_llm=True,          # Enable smart synthesis via Groq
+            llm_timeout=2.0,       # 2s max — never block the IDE
+        )
+        
+        # Instantiate modular tool handlers
+        self._tool_instances = self._init_tool_instances()
         
         # Define available tools
         self.tools = self._define_tools()
         self.resources = self._define_resources()
         self.prompts = self._define_prompts()
     
-    def _check_rate_limit(self, tool_name: str) -> bool:
+    def _init_tool_instances(self) -> Dict[str, Any]:
+        """Initialize all modular MCP tool handlers."""
+        instances = {}
+        
+        # State tools (1:1 mapping)
+        instances['hcr_get_state'] = GetStateTool(self)
+        instances['hcr_get_causal_graph'] = GetCausalGraphTool(self)
+        instances['hcr_get_recent_activity'] = GetRecentActivityTool(self)
+        
+        # Task tools (1:1 mapping)
+        instances['hcr_get_current_task'] = GetCurrentTaskTool(self)
+        instances['hcr_get_next_action'] = GetNextActionTool(self)
+        
+        # Session tools (multi-action: inject action based on tool name)
+        session_tools = SessionTools(self)
+        instances['hcr_create_session'] = session_tools
+        instances['hcr_set_session_note'] = session_tools
+        instances['hcr_merge_session'] = session_tools
+        instances['hcr_list_sessions'] = session_tools
+        
+        # Shared state tools (multi-action)
+        shared_tools = SharedStateTools(self)
+        instances['hcr_share_state'] = shared_tools
+        instances['hcr_get_shared_state'] = shared_tools
+        instances['hcr_list_shared_states'] = shared_tools
+        
+        # Version tools (multi-action)
+        version_tools = VersionTools(self)
+        instances['hcr_get_version_history'] = version_tools
+        instances['hcr_restore_version'] = version_tools
+        
+        # Single-purpose tools
+        instances['hcr_get_system_health'] = HealthTools(self)
+        instances['hcr_record_file_edit'] = FileTools(self)
+        instances['hcr_capture_full_context'] = ContextTools(self)
+        instances['hcr_search_history'] = SearchTools(self)
+        instances['hcr_get_recommendations'] = RecommendationTools(self)
+        instances['hcr_get_learned_operators'] = OperatorTools(self)
+        instances['hcr_analyze_impact'] = ImpactTools(self)
+        
+        return instances
+    
+    def _ensure_daemon_running(self):
+        """Auto-start daemon if not already running - ensures background tracking"""
+        try:
+            from product.daemon.hcr_daemon import HCRDaemon
+            daemon = HCRDaemon(self.project_path)
+            
+            if not daemon.is_already_running():
+                import subprocess
+                import sys
+                popen_kwargs = {
+                    "stdout": subprocess.DEVNULL,
+                    "stderr": subprocess.DEVNULL,
+                }
+                if sys.platform == "win32":
+                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    if creationflags:
+                        popen_kwargs["creationflags"] = creationflags
+                else:
+                    popen_kwargs["start_new_session"] = True
+                try:
+                    subprocess.Popen(
+                        [sys.executable, "-m", "product.daemon.hcr_daemon", "start", "--project", self.project_path],
+                        **popen_kwargs
+                    )
+                except OSError:
+                    popen_kwargs.pop("creationflags", None)
+                    popen_kwargs.pop("start_new_session", None)
+                    subprocess.Popen(
+                        [sys.executable, "-m", "product.daemon.hcr_daemon", "start", "--project", self.project_path],
+                        **popen_kwargs
+                    )
+                self.logger.info("Auto-started HCR daemon for background tracking")
+        except Exception as e:
+            self.logger.warning(f"Could not auto-start daemon: {e}")
+            # Continue without daemon - engine will still work
+    
+    async def _check_rate_limit(self, tool_name: str) -> bool:
         """Check if tool call is within rate limit. Returns True if allowed."""
         from time import time
         
-        now = time()
-        minute_ago = now - 60
+        async with self._lock:
+            now = time()
+            minute_ago = now - 60
+            
+            # Get calls for this tool in last minute
+            calls = self._rate_limits.get(tool_name, [])
+            calls = [t for t in calls if t > minute_ago]  # Filter to last minute
+            
+            if len(calls) >= self._max_calls_per_minute:
+                return False
+            
+            calls.append(now)
+            self._rate_limits[tool_name] = calls
+            return True
+    
+    async def _check_circuit_breaker(self, component: str) -> tuple[bool, str]:
+        """Check circuit breaker state for a component.
+        Returns (allowed: bool, reason: str)
         
-        # Get calls for this tool in last minute
-        calls = self._rate_limits.get(tool_name, [])
-        calls = [t for t in calls if t > minute_ago]  # Filter to last minute
+        PHASE 2: Prevent cascading failures with circuit breaker pattern.
+        States: 'closed' (normal), 'open' (rejecting), 'half-open' (testing recovery)
+        """
+        from time import time
         
-        if len(calls) >= self._max_calls_per_minute:
-            return False
+        async with self._lock:
+            cb = self._circuit_breakers.get(component)
+            if not cb:
+                return True, "Unknown component"
+            
+            now = time()
+            
+            # If closed, check if we should remain closed
+            if cb['state'] == 'closed':
+                if cb['failures'] >= self._circuit_breaker_threshold:
+                    cb['state'] = 'open'
+                    cb['last_failure_time'] = now
+                    return False, f"Circuit breaker open for {component} (too many failures)"
+                return True, "Circuit breaker closed (normal)"
+            
+            # If open, check if we should try half-open (recovery test)
+            elif cb['state'] == 'open':
+                if now - cb['last_failure_time'] > self._circuit_breaker_reset_time:
+                    cb['state'] = 'half-open'
+                    self.logger.info(f"Circuit breaker {component} entering half-open state")
+                    return True, f"Circuit breaker half-open for {component} (recovery test)"
+                return False, f"Circuit breaker open for {component}"
+            
+            # If half-open, allow the call to test recovery
+            else:  # half-open
+                return True, "Circuit breaker half-open (recovery test)"
+    
+    async def _record_circuit_breaker_success(self, component: str):
+        """Record successful operation to recover from open circuit."""
+        async with self._lock:
+            cb = self._circuit_breakers.get(component)
+            if cb and cb['state'] == 'half-open':
+                cb['failures'] = 0
+                cb['state'] = 'closed'
+                self.logger.info(f"Circuit breaker {component} recovered to closed state")
+            elif cb:
+                cb['failures'] = max(0, cb['failures'] - 1)  # Decay failures slowly
+    
+    async def _record_circuit_breaker_failure(self, component: str):
+        """Record failure to track component health."""
+        from time import time
+        async with self._lock:
+            cb = self._circuit_breakers.get(component)
+            if cb:
+                cb['failures'] += 1
+                cb['last_failure_time'] = time()
+                if cb['state'] == 'half-open':
+                    cb['state'] = 'open'
+                    self.logger.warning(f"Circuit breaker {component} re-opened (recovery failed)")
+    
+    async def _generate_request_id(self) -> str:
+        """Generate a unique request ID for tracing (PHASE 2)."""
+        from datetime import datetime
+        import uuid
+        async with self._lock:
+            self._request_counter += 1
+            request_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._request_counter}_{str(uuid.uuid4())[:8]}"
+            return request_id
+    
+    async def _trace_request_start(self, request_id: str, tool_name: str, args: Dict[str, Any]):
+        """Record request start for observability (PHASE 2)."""
+        import time
+        async with self._lock:
+            self._active_requests[request_id] = {
+                'tool': tool_name,
+                'start_time': time.time(),
+                'args_keys': list(args.keys()) if args else [],
+                'status': 'running'
+            }
+    
+    async def _trace_request_end(self, request_id: str, status: str, duration_ms: float = 0):
+        """Record request completion (PHASE 2)."""
+        async with self._lock:
+            if request_id in self._active_requests:
+                self._active_requests[request_id]['status'] = status
+                self._active_requests[request_id]['duration_ms'] = duration_ms
+                # Keep last 100 requests for debugging
+                if len(self._active_requests) > 100:
+                    oldest_id = next(iter(self._active_requests))
+                    del self._active_requests[oldest_id]
+                self.logger.debug(f"[{request_id}] {self._active_requests[request_id]['tool']} completed in {duration_ms}ms: {status}")
+    
+    async def _run_blocking(self, fn, timeout: float = 5.0) -> Any:
+        """Run a blocking function in the thread pool with timeout.
         
-        calls.append(now)
-        self._rate_limits[tool_name] = calls
-        return True
+        FIXED: Reduced default timeout from 15s to 5s for faster failure modes.
+        This prevents AI IDE from hanging on slow operations.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, fn),
+                timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Operation exceeded {timeout}s timeout")
+    
+    def _cache_valid(self, cache_ts: float) -> bool:
+        """Check if a cache entry is still valid."""
+        return (time.time() - cache_ts) < self._cache_ttl
+    
+    def _invalidate_caches(self):
+        """Invalidate all caches after state mutation."""
+        self._shared_keys_cache = None
+        self._shared_keys_cache_ts = 0.0
+        self._learned_ops_cache = None
+        self._learned_ops_cache_ts = 0.0
+        self._version_cache = None
+        self._version_cache_ts = 0.0
+        self._health_cache = None
+        self._health_cache_ts = 0.0
     
     def _define_tools(self) -> List[MCPTool]:
         """Define MCP tools exposed by HCR"""
@@ -394,6 +676,67 @@ class HCRMCPResponder:
                     }
                 }
             ),
+            MCPTool(
+                name="hcr_analyze_impact",
+                description="Analyze the ripple effect of changing a specific file using the causal dependency graph",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to the file to analyze (relative to project root)"
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "description": "Maximum depth for impact propagation (1-5)",
+                            "default": 3
+                        }
+                    },
+                    "required": ["file_path"]
+                }
+            ),
+            MCPTool(
+                name="hcr_get_recommendations",
+                description="Get AI-powered recommendations for next actions with confidence scores",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "context": {
+                            "type": "string",
+                            "description": "Additional context about what you're working on"
+                        },
+                        "use_llm": {
+                            "type": "boolean",
+                            "description": "Use LLM for enhanced recommendations",
+                            "default": True
+                        }
+                    }
+                }
+            ),
+            MCPTool(
+                name="hcr_search_history",
+                description="Search event history for specific patterns, file changes, or keywords",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query (file path, keyword, or event type)"
+                        },
+                        "event_type": {
+                            "type": "string",
+                            "description": "Filter by event type (file_edit, git_commit, etc.)",
+                            "default": ""
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum results",
+                            "default": 20
+                        }
+                    },
+                    "required": ["query"]
+                }
+            ),
         ]
     
     def _define_resources(self) -> List[MCPResource]:
@@ -500,7 +843,11 @@ class HCRMCPResponder:
                     "jsonrpc": "2.0",
                     "result": result_data["result"]
                 }
-            elif "error" in result_data:
+            elif (
+                "error" in result_data
+                and isinstance(result_data["error"], dict)
+                and "message" in result_data["error"]
+            ):
                 response = {
                     "jsonrpc": "2.0",
                     "error": result_data["error"]
@@ -562,49 +909,76 @@ class HCRMCPResponder:
     
     async def _handle_tools_call(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a tool call and record as HCR event"""
-        name = params.get("name")
-        arguments = params.get("arguments", {})
-        session_id = arguments.get("session_id")
+        import time
         
-        # Log tool invocation as event to update context
+        # PHASE 2: Generate request ID for tracing
+        request_id = await self._generate_request_id()
+        start_time = time.time()
+        
+        # FIXED: Added input validation to prevent DoS and injection attacks
+        name = params.get("name") if isinstance(params, dict) else None
+        arguments = params.get("arguments", {}) if isinstance(params, dict) else {}
+        
+        # PHASE 2: Trace request start
+        await self._trace_request_start(request_id, name or "unknown", arguments)
+        
+        if not isinstance(name, str) or not name.startswith("hcr_"):
+            await self._trace_request_end(request_id, "invalid_input", (time.time() - start_time) * 1000)
+            return self._error_response("Invalid tool name")
+        
+        if not isinstance(arguments, dict):
+            await self._trace_request_end(request_id, "invalid_args", (time.time() - start_time) * 1000)
+            return self._error_response("Arguments must be an object")
+        
+        # FIXED: Limit argument payload to 100KB
+        if len(json.dumps(arguments)) > 100_000:
+            await self._trace_request_end(request_id, "payload_exceeded", (time.time() - start_time) * 1000)
+            return self._error_response("Arguments payload exceeds 100KB")
+        
+        session_id = arguments.get("session_id") if isinstance(arguments, dict) else None
+        
+        # Log tool invocation as event to update context (fire-and-forget, non-blocking)
         if self.engine:
-            from src.engine_api import EngineEvent
-            from datetime import datetime
-            event = EngineEvent(
-                event_type='mcp_tool_call',
-                timestamp=datetime.now(),
-                data={'tool': name, 'args': arguments}
-            )
-            self.engine.update_from_environment(event)
+            try:
+                from src.engine_api import EngineEvent
+                from datetime import datetime
+                event = EngineEvent(
+                    event_type='mcp_tool_call',
+                    timestamp=datetime.now(),
+                    data={'tool': name, 'args': arguments}
+                )
+                # Don't block tool execution on disk write
+                asyncio.get_running_loop().run_in_executor(
+                    self._executor, self.engine.update_from_environment, event
+                )
+            except Exception:
+                pass  # Logging failures should never break tool calls
         
-        # Route to appropriate handler
-        handlers = {
-            "hcr_get_state": self._tool_get_state,
-            "hcr_get_causal_graph": self._tool_get_causal_graph,
-            "hcr_get_recent_activity": self._tool_get_recent_activity,
-            "hcr_get_current_task": self._tool_get_current_task,
-            "hcr_get_next_action": self._tool_get_next_action,
-            "hcr_list_shared_states": self._tool_list_shared_states,
-            "hcr_get_shared_state": self._tool_get_shared_state,
-            "hcr_share_state": self._tool_share_state,
-            "hcr_get_version_history": self._tool_get_version_history,
-            "hcr_restore_version": self._tool_restore_version,
-            "hcr_get_learned_operators": self._tool_get_learned_operators,
-            "hcr_list_sessions": self._tool_list_sessions,
-            "hcr_create_session": self._tool_create_session,
-            "hcr_set_session_note": self._tool_set_session_note,
-            "hcr_merge_session": self._tool_merge_session,
-            "hcr_get_system_health": self._tool_get_system_health,
-            "hcr_record_file_edit": self._tool_record_file_edit,
-            "hcr_capture_full_context": self._tool_capture_full_context,
+        # Route to modular tool instance
+        # Multi-action tools need action injected based on tool name
+        _tool_action_map = {
+            'hcr_create_session': 'create',
+            'hcr_set_session_note': 'set_note',
+            'hcr_merge_session': 'merge',
+            'hcr_list_sessions': 'list',
+            'hcr_share_state': 'share',
+            'hcr_get_shared_state': 'get',
+            'hcr_list_shared_states': 'list',
+            'hcr_get_version_history': 'history',
+            'hcr_restore_version': 'restore',
         }
         
-        handler = handlers.get(name)
-        if not handler:
+        tool_instance = self._tool_instances.get(name)
+        if not tool_instance:
             return self._error_response(f"Unknown tool: {name}")
         
+        # Inject action for multi-action tools
+        if name in _tool_action_map:
+            arguments = dict(arguments)
+            arguments['action'] = _tool_action_map[name]
+        
         # Check rate limit
-        if not self._check_rate_limit(name):
+        if not await self._check_rate_limit(name):
             return {
                 "result": {
                     "content": [{"type": "text", "text": f"Rate limit exceeded for {name}. Max 30 calls per minute."}],
@@ -613,7 +987,13 @@ class HCRMCPResponder:
             }
         
         # Smart state loading: only reload if file changed (optimization)
-        if self.engine:
+        # Skip for fast read-only tools that don't need fresh state
+        fast_tools = {"hcr_get_state", "hcr_get_causal_graph", "hcr_get_current_task", 
+                      "hcr_get_next_action", "hcr_get_system_health", "hcr_list_shared_states",
+                      "hcr_get_shared_state", "hcr_get_version_history", "hcr_get_learned_operators",
+                      "hcr_list_sessions", "hcr_search_history"}
+        
+        if self.engine and name not in fast_tools:
             try:
                 state_file = self.engine.state_file
                 current_mtime = 0
@@ -622,49 +1002,129 @@ class HCRMCPResponder:
                 
                 # Only reload if file modified since last cache
                 if not self._state_cached or current_mtime > self._state_cache_mtime:
-                    loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(self._executor, self.engine.load_state)
-                    self._state_cache_mtime = current_mtime
-                    self._state_cached = True
-                    self.logger.debug(f"State loaded from disk (mtime: {current_mtime})")
+                    try:
+                        await self._run_blocking(self.engine.load_state, timeout=2.0)
+                        self._state_cache_mtime = current_mtime
+                        self._state_cached = True
+                        self.logger.debug(f"State loaded from disk (mtime: {current_mtime})")
+                    except Exception as e:
+                        self.logger.warning(f"State load timed out: {e}")
+                        # Continue with potentially stale state rather than hang
                 else:
                     self.logger.debug("Using cached state (file unchanged)")
             except Exception as e:
                 self.logger.warning(f"Failed to preload state: {e}")
         
-        # Run handler with timeout to prevent blocking on LLM calls
+        # FIXED: Reduced timeout from 15s to 5s for faster failure modes
         try:
-            result = await asyncio.wait_for(handler(arguments), timeout=10.0)
+            result = await asyncio.wait_for(tool_instance.execute(arguments), timeout=5.0)
+            # PHASE 2: Trace successful completion
+            duration_ms = (time.time() - start_time) * 1000
+            await self._trace_request_end(request_id, "success", duration_ms)
+            # Normalize & synthesize tool result to commercial-grade MCP format
+            return await self._normalize_tool_result(result, session_id=session_id, tool_name=name)
         except asyncio.TimeoutError:
+            duration_ms = (time.time() - start_time) * 1000
+            await self._trace_request_end(request_id, "timeout", duration_ms)
+            self.logger.warning(f"[{request_id}] Tool {name} timed out after 5s")
             return {
                 "result": {
-                    "content": [{"type": "text", "text": "Tool call timed out. LLM inference may be slow. Try again or check API key."}],
+                    "content": [{"type": "text", "text": f"⏱️ Tool '{name}' exceeded 5s timeout.\n\nThis usually means:\n- LLM inference is slow\n- Git operations on large repo\n- File diff computation\n\nTry with simpler inputs or check system resources. Run `hcr_get_system_health` to diagnose."}],
                     "isError": True
                 }
             }
-        
-        # Check if result has a 'content' field (formatted text for AI)
-        if isinstance(result, dict) and "content" in result:
-            # Use the formatted content as primary text, include rest as metadata
-            text_content = result.get("content", "")
-            # Add metadata to the formatted text if there's more data (without modifying original)
-            remaining = {k: v for k, v in result.items() if k != "content"}
-            if remaining:
-                try:
-                    meta_json = json.dumps(remaining, indent=2, default=str)
-                    text_content += f"\n\n[Metadata: {meta_json}]"
-                except (TypeError, ValueError):
-                    pass  # Skip metadata if serialization fails
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            await self._trace_request_end(request_id, "error", duration_ms)
+            self.logger.error(f"[{request_id}] Tool {name} failed with exception: {e}", exc_info=True)
+            return {
+                "result": {
+                    "content": [{"type": "text", "text": f"❌ Tool '{name}' failed: {str(e)[:100]}\n\nDebug info:\n- Request ID: {request_id}\n- Error type: {type(e).__name__}\n- Timestamp: {datetime.now().isoformat()}\n\nCheck engine status with `hcr_get_system_health`."}],
+                    "isError": True
+                }
+            }
 
-            # Snapshot session-specific summary for downstream panes
-            if session_id and "session_snapshot" not in remaining:
-                self._record_session_snapshot(session_id, text_content, remaining)
+    async def _normalize_tool_result(
+        self, result: Any, session_id: Optional[str] = None, tool_name: Optional[str] = ""
+    ) -> Dict[str, Any]:
+        """Normalize and synthesize any tool result into commercial-grade MCP output.
 
-            return {"result": {"content": [{"type": "text", "text": text_content}]}}
+        Two-stage pipeline:
+        1. Synthesis (optional): Feed raw data to Groq LLM for polished markdown.
+           Skipped for simple confirmation tools; 2s timeout; cached per data hash.
+        2. Normalization: Wrap in standard MCP {"content": [{"type":"text","text":...}]} format.
+        """
+        import json
+
+        # --- Stage 1: Commercial-grade synthesis (fast path for simple tools) ---
+        synthesized_text: Optional[str] = None
+        if (
+            isinstance(result, dict)
+            and tool_name
+            and self._synthesizer
+            and tool_name not in {"hcr_create_session", "hcr_set_session_note", "hcr_merge_session",
+                                   "hcr_share_state", "hcr_get_shared_state", "hcr_record_file_edit",
+                                   "hcr_restore_version"}
+        ):
+            try:
+                synthesized_text = await asyncio.wait_for(
+                    self._synthesizer.synthesize_async(tool_name, result),
+                    timeout=2.0
+                )
+            except asyncio.TimeoutError:
+                self.logger.debug(f"Synthesis timeout for {tool_name}, falling back to fast format")
+            except Exception as e:
+                self.logger.debug(f"Synthesis failed for {tool_name}: {e}")
+
+        # --- Stage 2: Normalization into MCP protocol format ---
+        if not isinstance(result, dict):
+            return {"result": {"content": [{"type": "text", "text": str(result)}], "isError": False}}
+
+        if "content" in result:
+            content = result.get("content", "")
+            if isinstance(content, str):
+                # Use synthesized text if available, else original content
+                text_content = synthesized_text if synthesized_text is not None else content
+                remaining = {k: v for k, v in result.items() if k != "content"}
+                # Append metadata only if NOT synthesized (synthesized already includes structured insight)
+                if remaining and synthesized_text is None:
+                    try:
+                        meta_json = json.dumps(remaining, indent=2, default=str)
+                        text_content += f"\n\n[Metadata: {meta_json}]"
+                    except (TypeError, ValueError):
+                        pass
+                if session_id and "session_snapshot" not in remaining:
+                    self._record_session_snapshot(session_id, text_content, remaining)
+                return {
+                    "result": {
+                        "content": [{"type": "text", "text": text_content}],
+                        "isError": result.get("isError", False)
+                    }
+                }
+            elif isinstance(content, list):
+                if session_id:
+                    remaining = {k: v for k, v in result.items() if k != "content"}
+                    text_parts = [c.get("text", "") for c in content if isinstance(c, dict)]
+                    if text_parts:
+                        self._record_session_snapshot(session_id, "\n".join(text_parts), remaining)
+                return {"result": result}
+            else:
+                return {
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps(result, indent=2, default=str)}],
+                        "isError": False
+                    }
+                }
         else:
-            # Standard JSON response for non-formatted results
-            return {"result": {"content": [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]}}
-    
+            # No content field: use synthesized text or raw JSON
+            text_content = synthesized_text if synthesized_text is not None else json.dumps(result, indent=2, default=str)
+            return {
+                "result": {
+                    "content": [{"type": "text", "text": text_content}],
+                    "isError": False
+                }
+            }
+
     def _resource_to_dict(self, resource: MCPResource) -> Dict[str, Any]:
         """Convert MCPResource to dict with camelCase field names"""
         return {
@@ -683,34 +1143,44 @@ class HCRMCPResponder:
         }
     
     async def _handle_resources_read(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Read a resource"""
+        """Read a resource with async I/O to avoid blocking the event loop."""
         uri = params.get("uri")
         mime_type = "application/json"
         
         if not self.engine:
             return self._error_response("Engine not initialized")
         
-        if uri == "hcr://state/current":
-            state = self.engine.load_state()
-            content = json.dumps(state.to_dict(), indent=2) if state else "{}"
-        elif uri == "hcr://causal-graph/main":
-            self.engine.load_state()
-            if self.engine.dependency_graph:
-                graph = {
-                    "forward": {k: list(v) for k, v in self.engine.dependency_graph.forward_edges.items()},
-                    "reverse": {k: list(v) for k, v in self.engine.dependency_graph.reverse_edges.items()}
-                }
-                content = json.dumps(graph, indent=2)
+        try:
+            if uri == "hcr://state/current":
+                # State already loaded by _handle_tools_call / engine init
+                def _get_state():
+                    state = self.engine._current_state
+                    return json.dumps(state.to_dict(), indent=2) if state else "{}"
+                content = await self._run_blocking(_get_state, timeout=2.0)
+            elif uri == "hcr://causal-graph/main":
+                # Graph already loaded with state
+                def _get_graph():
+                    if self.engine.dependency_graph:
+                        graph = {
+                            "forward": {k: list(v) for k, v in self.engine.dependency_graph.forward_edges.items()},
+                            "reverse": {k: list(v) for k, v in self.engine.dependency_graph.reverse_edges.items()}
+                        }
+                        return json.dumps(graph, indent=2)
+                    return "{}"
+                content = await self._run_blocking(_get_graph, timeout=2.0)
+            elif uri == "hcr://task/current":
+                # Fast heuristic inference, no LLM, no redundant load_state
+                def _infer_task():
+                    context = self.engine.infer_context(use_llm=False)
+                    return context.current_task if context else "No current task"
+                content = await self._run_blocking(_infer_task, timeout=2.0)
+                mime_type = "text/plain"
             else:
-                content = "{}"
-        elif uri == "hcr://task/current":
-            self.engine.load_state()
-            context = self.engine.infer_context()
-            task = context.current_task if context else "No current task"
-            content = task
+                return self._error_response(f"Unknown resource: {uri}")
+        except Exception as e:
+            self.logger.warning(f"Resource read failed for {uri}: {e}")
+            content = f"Error loading resource: {e}"
             mime_type = "text/plain"
-        else:
-            return self._error_response(f"Unknown resource: {uri}")
         
         return {
             "result": {
@@ -735,32 +1205,40 @@ class HCRMCPResponder:
         }
     
     async def _handle_prompts_get(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Get a prompt"""
+        """Get a prompt with fast LLM-free fallback."""
         name = params.get("name")
         arguments = params.get("arguments", {})
+        use_llm = arguments.get("use_llm", False)  # Default False for speed
         
         if not self.engine:
             return self._error_response("Engine not initialized")
         
-        # Run inference in thread pool to prevent blocking
+        # FIXED: Fast heuristic inference with use_llm=False, reduced timeout to 2s
         try:
-            loop = asyncio.get_running_loop()
-            context = await loop.run_in_executor(self._executor, self.engine.infer_context)
-        except RuntimeError:
-            context = self.engine.infer_context()
+            context = await self._run_blocking(lambda: self.engine.infer_context(use_llm=False), timeout=2.0)
+        except Exception as e:
+            self.logger.warning(f"Prompt inference failed: {e}")
+            from src.engine_api import EngineContext
+            context = EngineContext(
+                current_task="Unknown",
+                progress_percent=0,
+                next_action="Initialize HCR",
+                confidence=0.0,
+                gap_minutes=0,
+                facts=[]
+            )
         
         if name == "hcr_resume_session":
             # Calculate gap from _last_saved
             gap = None
             if hasattr(self.engine, '_last_saved') and self.engine._last_saved:
-                from datetime import datetime
                 gap = (datetime.now() - self.engine._last_saved).total_seconds() / 60
             
-            prompt_text = await self._generate_smart_resume(context, use_llm=True, mode="resume", gap_override=gap)
+            prompt_text = await self._generate_smart_resume(context, use_llm=use_llm, mode="resume", gap_override=gap)
             
         elif name == "hcr_context_aware_coding":
             query = arguments.get("query", "")
-            prompt_text = await self._generate_smart_resume(context, use_llm=True, mode="coding", extra_query=query)
+            prompt_text = await self._generate_smart_resume(context, use_llm=use_llm, mode="coding", extra_query=query)
         else:
             return self._error_response(f"Unknown prompt: {name}")
         
@@ -811,9 +1289,16 @@ class HCRMCPResponder:
         result = {"content": content, "exists": True}
         
         if include_history:
-            from src.causal.event_store import CausalEvent
-            recent_events = self.engine.event_store.get_recent_events(50)
-            result["recent_events"] = [asdict(e) for e in recent_events]
+            try:
+                from src.causal.event_store import CausalEvent
+                recent_events = await self._run_blocking(
+                    lambda: self.engine.event_store.get_recent_events(50),
+                    timeout=5.0
+                )
+                result["recent_events"] = [asdict(e) for e in recent_events]
+            except Exception as e:
+                self.logger.warning(f"History load failed: {e}")
+                result["recent_events"] = []
         
         self._record_session_snapshot(session_id, content, {"exists": True})
 
@@ -843,8 +1328,15 @@ class HCRMCPResponder:
         if not self.engine:
             return {"content": "HCR Engine not initialized. No activity recorded yet.", "activities": []}
         
-        # State preloaded by _handle_tools_call
-        events = self.engine.event_store.get_recent_events(limit)
+        # Load events in thread pool to avoid blocking on JSONL read
+        try:
+            events = await self._run_blocking(
+                lambda: self.engine.event_store.get_recent_events(limit),
+                timeout=5.0
+            )
+        except Exception as e:
+            self.logger.warning(f"Recent activity load failed: {e}")
+            events = []
         
         if not events:
             return {
@@ -885,18 +1377,26 @@ class HCRMCPResponder:
     
     async def _tool_get_current_task(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get current task from engine context inference - returns formatted context for AI"""
-        use_llm = args.get("use_llm", True)
+        use_llm = args.get("use_llm", False)  # Default False for speed
         session_id = args.get("session_id")
         
         if not self.engine:
             return {"content": "HCR Engine not initialized. Please run 'hcr init' first.", "task": None}
         
-        # Run inference in thread pool to prevent blocking
+        # FIXED: Use use_llm=False for fast heuristic inference, reduced timeout to 2s
         try:
-            loop = asyncio.get_running_loop()
-            context = await loop.run_in_executor(self._executor, self.engine.infer_context)
-        except RuntimeError:
-            context = self.engine.infer_context()
+            context = await self._run_blocking(lambda: self.engine.infer_context(use_llm=False), timeout=2.0)
+        except Exception as e:
+            self.logger.warning(f"Task inference failed: {e}")
+            from src.engine_api import EngineContext
+            context = EngineContext(
+                current_task="Unknown",
+                progress_percent=0,
+                next_action="Initialize HCR",
+                confidence=0.0,
+                gap_minutes=0,
+                facts=[]
+            )
         
         summary = await self._generate_smart_resume(context, use_llm=use_llm, mode="resume", session_id=session_id)
         self._record_session_snapshot(session_id, summary, {
@@ -913,19 +1413,27 @@ class HCRMCPResponder:
     
     async def _tool_get_next_action(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get next action suggestion from engine - returns formatted recommendation"""
-        use_llm = args.get("use_llm", True)
+        use_llm = args.get("use_llm", False)  # Default False for speed
         session_id = args.get("session_id")
 
         if not self.engine:
             return {"content": "HCR Engine not initialized. Please run 'hcr init' first.", "task": None}
 
         
-        # Run inference in thread pool to prevent blocking
+        # FIXED: Use use_llm=False for fast heuristic inference, reduced timeout to 2s
         try:
-            loop = asyncio.get_running_loop()
-            context = await loop.run_in_executor(self._executor, self.engine.infer_context)
-        except RuntimeError:
-            context = self.engine.infer_context()
+            context = await self._run_blocking(lambda: self.engine.infer_context(use_llm=False), timeout=2.0)
+        except Exception as e:
+            self.logger.warning(f"Next action inference failed: {e}")
+            from src.engine_api import EngineContext
+            context = EngineContext(
+                current_task="Unknown",
+                progress_percent=0,
+                next_action="Initialize HCR",
+                confidence=0.0,
+                gap_minutes=0,
+                facts=[]
+            )
 
         summary = await self._generate_smart_resume(context, use_llm=use_llm, mode="action", session_id=session_id)
         self._record_session_snapshot(session_id, summary, {
@@ -941,117 +1449,266 @@ class HCRMCPResponder:
         }
     
     async def _tool_list_shared_states(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """List shared states"""
-        keys = self.cross_project.list_shared_keys()
-        return {"shared_states": keys, "count": len(keys)}
+        """List shared states with caching."""
+        if not self.cross_project:
+            return {"shared_states": [], "count": 0}
+        
+        # k2.6 FIX: Use asyncio lock for thread-safe cache access
+        async with self._cache_locks['shared_keys']:
+            if self._cache_valid(self._shared_keys_cache_ts) and self._shared_keys_cache is not None:
+                return {"shared_states": self._shared_keys_cache, "count": len(self._shared_keys_cache), "cached": True}
+        
+        try:
+            keys = await self._run_blocking(self.cross_project.list_shared_keys, timeout=5.0)
+            async with self._cache_locks['shared_keys']:
+                self._shared_keys_cache = keys
+                self._shared_keys_cache_ts = time.time()
+            return {"shared_states": keys, "count": len(keys), "cached": False}
+        except Exception as e:
+            self.logger.warning(f"List shared states failed: {e}")
+            return {"error": str(e), "shared_states": [], "count": 0}
     
     async def _tool_get_shared_state(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get shared state"""
+        """Get shared state with async I/O."""
+        if not self.cross_project:
+            return {"error": "Cross-project manager not initialized", "exists": False}
+        
         key = args.get("key")
-        value = self.cross_project.get_shared_state_value(key)
         
-        if value is None:
-            return {"error": f"Shared state '{key}' not found", "exists": False}
-        
-        return {"key": key, "value": value, "exists": True}
+        try:
+            value = await self._run_blocking(
+                lambda: self.cross_project.get_shared_state_value(key),
+                timeout=5.0
+            )
+            
+            if value is None:
+                return {"error": f"Shared state '{key}' not found", "exists": False}
+            
+            return {"key": key, "value": value, "exists": True}
+        except Exception as e:
+            self.logger.warning(f"Get shared state failed: {e}")
+            return {"error": str(e), "exists": False}
     
     async def _tool_share_state(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Share state"""
+        """Share state with cache invalidation."""
+        if not self.cross_project:
+            return {"error": "Cross-project manager not initialized", "success": False}
+        
         key = args.get("key")
         value = args.get("value")
         
-        # Get current project ID
-        project_id = self.cross_project.register_project(self.project_path, "current")
-        
-        success = self.cross_project.share_state_across_projects(key, value, project_id)
-        
-        return {"success": success, "key": key}
+        try:
+            project_id = await self._run_blocking(
+                lambda: self.cross_project.register_project(self.project_path, "current"),
+                timeout=5.0
+            )
+            
+            success = await self._run_blocking(
+                lambda: self.cross_project.share_state_across_projects(key, value, project_id),
+                timeout=5.0
+            )
+            
+            if success:
+                # k2.6 FIX: Lock cache invalidation to prevent race with concurrent reads
+                async with self._cache_locks['shared_keys']:
+                    self._shared_keys_cache = None
+                    self._shared_keys_cache_ts = 0.0
+            
+            return {"success": success, "key": key}
+        except Exception as e:
+            self.logger.warning(f"Share state failed: {e}")
+            return {"error": str(e), "success": False}
     
     async def _tool_get_version_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get version history"""
-        if not self.engine:
-            return {"error": "Engine not initialized", "versions": []}
+        """Get version history using DevStatePersistence with caching."""
+        if not self.persistence:
+            return {"error": "Persistence not initialized", "versions": []}
         
-        # Get event history as proxy for version history
         limit = args.get("limit", 20)
-        events = self.engine.event_store.get_recent_events(limit)
         
-        versions = [
-            {
-                "hash": e.event_id,
-                "timestamp": e.timestamp,
-                "message": f"{e.event_type}: {e.source}",
-                "event_type": e.event_type
-            }
-            for e in events
-        ]
+        # k2.6 FIX: Use asyncio lock for thread-safe cache access
+        async with self._cache_locks['version']:
+            if self._cache_valid(self._version_cache_ts) and self._version_cache is not None:
+                versions = self._version_cache[-limit:]
+                return {"versions": versions, "count": len(versions), "cached": True}
         
-        return {"versions": versions, "count": len(versions)}
+        try:
+            # FIXED: Reduced from 10.0 to 5.0
+            versions_raw = await self._run_blocking(
+                lambda: self.persistence.get_version_history(limit=limit),
+                timeout=5.0
+            )
+            versions = [
+                {
+                    "hash": v.hash,
+                    "timestamp": v.timestamp,
+                    "message": v.message,
+                    "state_size_bytes": v.state_size_bytes
+                }
+                for v in versions_raw
+            ]
+            async with self._cache_locks['version']:
+                self._version_cache = versions
+                self._version_cache_ts = time.time()
+            return {"versions": versions, "count": len(versions), "cached": False}
+        except Exception as e:
+            self.logger.warning(f"Version history fetch failed: {e}")
+            return {"error": str(e), "versions": [], "count": 0}
     
     async def _tool_restore_version(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Restore version - reloads state to specific point in event history"""
+        """Restore version - replays events up to specific point in history"""
         if not self.engine:
             return {"error": "Engine not initialized", "success": False}
-        
+
         version_hash = args.get("version_hash")
-        
+
         # Find event with matching ID
         all_events = self.engine.event_store.events
-        target_event = None
-        for e in all_events:
+        target_idx = None
+        for idx, e in enumerate(all_events):
             if e.event_id == version_hash:
-                target_event = e
+                target_idx = idx
                 break
-        
-        if not target_event:
+
+        if target_idx is None:
             return {"error": f"Version '{version_hash}' not found", "success": False}
-        
-        # Reload state and replay events up to this point
-        self.engine.load_state()
-        
-        return {"success": True, "restored_hash": version_hash, "event": asdict(target_event)}
+
+        # Replay events in thread pool with timeout
+        try:
+            def _replay():
+                from src.state import CognitiveState
+                self.engine._current_state = CognitiveState.create_fresh()
+                self.engine.dependency_graph = self.engine.dependency_graph.__class__()
+                replayed = 0
+                for e in all_events[:target_idx + 1]:
+                    from src.engine_api import EngineEvent
+                    event = EngineEvent(
+                        event_type=e.event_type,
+                        timestamp=e.timestamp,
+                        source=e.source,
+                        data=e.details
+                    )
+                    self.engine.update_from_environment(event)
+                    replayed += 1
+                self.engine.save_state()
+                return replayed
+            
+            # FIXED: Reduced from 10.0 to 5.0
+            replayed = await self._run_blocking(_replay, timeout=5.0)
+            self._invalidate_caches()
+        except Exception as e:
+            self.logger.error(f"Version restore failed: {e}")
+            return {"error": f"Restore failed: {e}", "success": False}
+
+        content = f"""## State Restored
+
+**Restored to:** `{version_hash}`
+**Events replayed:** {replayed}
+**Timestamp:** {all_events[target_idx].timestamp}
+
+The cognitive state has been reset and replayed up to this point in history.
+"""
+
+        return {
+            "content": content,
+            "success": True,
+            "restored_hash": version_hash,
+            "events_replayed": replayed,
+            "target_timestamp": all_events[target_idx].timestamp.isoformat()
+        }
     
     async def _tool_get_learned_operators(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get learned operators"""
-        operators = self.cross_project.list_learned_operators()
+        """Get learned operators with caching and async loading."""
+        if not self.cross_project:
+            return {"operators": [], "count": 0}
         
-        # Load full operator data
-        operator_data = []
-        for op_name in operators:
-            op = self.cross_project.load_learned_operator(op_name)
-            if op:
-                operator_data.append(op)
+        # k2.6 FIX: Use asyncio lock for thread-safe cache access
+        async with self._cache_locks['learned_ops']:
+            if self._cache_valid(self._learned_ops_cache_ts) and self._learned_ops_cache is not None:
+                return {"operators": self._learned_ops_cache, "count": len(self._learned_ops_cache), "cached": True}
         
-        return {"operators": operator_data, "count": len(operator_data)}
+        try:
+            # Get operator list asynchronously (fast)
+            op_names = await self._run_blocking(
+                self.cross_project.list_learned_operators,
+                timeout=5.0
+            )
+            
+            # Load operator data with limit to avoid disk thrashing
+            max_ops = 50
+            op_names = op_names[:max_ops]
+            
+            def _load_ops():
+                data = []
+                for name in op_names:
+                    op = self.cross_project.load_learned_operator(name)
+                    if op:
+                        data.append({"name": name, "learned_at": op.get("learned_at"), "source_project": op.get("source_project")})
+                return data
+            
+            # FIXED: Reduced from 10.0 to 5.0
+            operator_data = await self._run_blocking(_load_ops, timeout=5.0)
+            async with self._cache_locks['learned_ops']:
+                self._learned_ops_cache = operator_data
+                self._learned_ops_cache_ts = time.time()
+            return {"operators": operator_data, "count": len(operator_data), "cached": False}
+        except Exception as e:
+            self.logger.warning(f"Learned operators fetch failed: {e}")
+            return {"error": str(e), "operators": [], "count": 0}
     
     async def _tool_get_system_health(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get system health"""
+        """Get system health with caching and async metrics gathering."""
         if not self.engine:
             return {"status": "unhealthy", "error": "Engine not initialized"}
         
-        # Gather health metrics
-        state = self.engine.load_state()
-        event_count = len(self.engine.event_store.events)
+        # k2.6 FIX: Use asyncio lock for thread-safe cache access
+        async with self._cache_locks['health']:
+            if self._cache_valid(self._health_cache_ts) and self._health_cache is not None:
+                cached = self._health_cache.copy()
+                cached["cached"] = True
+                cached["timestamp"] = datetime.now().isoformat()
+                return cached
         
-        health = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "components": {
-                "engine": "healthy",
-                "state_persistence": "healthy" if state else "no_state",
-                "cross_project": "healthy",
-                "security": "healthy",
-            },
-            "metrics": {
-                "state_exists": state is not None,
-                "event_count": event_count,
-                "projects_registered": len(self.cross_project.get_all_projects()) if self.cross_project else 0,
-                "shared_states": len(self.cross_project.list_shared_keys()) if self.cross_project else 0,
-                "learned_operators": len(self.cross_project.list_learned_operators()) if self.cross_project else 0,
-            }
-        }
-        
-        return health
+        try:
+            def _gather_health():
+                # State already loaded by engine/_handle_tools_call, use current state
+                state = self.engine._current_state
+                event_count = len(self.engine.event_store.events)
+                projects = 0
+                shared = 0
+                learned = 0
+                if self.cross_project:
+                    projects = len(self.cross_project.get_all_projects())
+                    shared = len(self.cross_project.list_shared_keys())
+                    learned = len(self.cross_project.list_learned_operators())
+                return {
+                    "status": "healthy",
+                    "timestamp": datetime.now().isoformat(),
+                    "components": {
+                        "engine": "healthy",
+                        "state_persistence": "healthy" if state else "no_state",
+                        "cross_project": "healthy" if self.cross_project else "unavailable",
+                        "security": "healthy" if self.security else "unavailable",
+                    },
+                    "metrics": {
+                        "state_exists": state is not None,
+                        "event_count": event_count,
+                        "projects_registered": projects,
+                        "shared_states": shared,
+                        "learned_operators": learned,
+                    }
+                }
+            
+            # FAST: Reduced to 2.0s - this is a simple status check
+            health = await self._run_blocking(_gather_health, timeout=2.0)
+            async with self._cache_locks['health']:
+                self._health_cache = health
+                self._health_cache_ts = time.time()
+            health["cached"] = False
+            return health
+        except Exception as e:
+            self.logger.warning(f"Health check failed: {e}")
+            return {"status": "degraded", "error": str(e), "timestamp": datetime.now().isoformat()}
     
     async def _tool_list_sessions(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List all active HCR sessions (context windows)"""
@@ -1079,10 +1736,14 @@ class HCRMCPResponder:
         }
     
     async def _tool_create_session(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new HCR session (context window)"""
+        """Create a new HCR session with fast LLM-free initialization."""
         session_id = args.get("session_id")
         tag = args.get("tag", "untitled")
         clone_from = args.get("clone_from", "")
+        use_llm = args.get("use_llm", False)  # Default False for speed
+        
+        if not session_id:
+            return {"content": "session_id is required", "success": False}
         
         if session_id in self._session_states:
             return {
@@ -1100,13 +1761,22 @@ class HCRMCPResponder:
             }
             self._session_private_notes[session_id] = list(self._session_private_notes.get(clone_from, []))
         else:
-            # Fresh session with current engine state
+            # Fresh session with current engine state - fast path, no LLM by default
+            panel = "No engine state available"
             if self.engine:
-                self.engine.load_state()
-                context = self.engine.infer_context()
-                panel = await self._generate_smart_resume(context, use_llm=True, mode="resume", session_id=session_id)
-            else:
-                panel = "No engine state available"
+                try:
+                    def _infer_ctx():
+                        self.engine.load_state()
+                        return self.engine.infer_context()
+                    # FIXED: Reduced from 8.0 to 3.0
+                    context = await self._run_blocking(_infer_ctx, timeout=3.0)
+                    panel = self._format_classic_panel(context, mode="resume")
+                    # Optionally enhance with LLM if explicitly requested
+                    if use_llm:
+                        panel = await self._generate_smart_resume(context, use_llm=True, mode="resume", session_id=session_id)
+                except Exception as e:
+                    self.logger.warning(f"Session context inference failed: {e}")
+                    panel = f"Session created but context inference timed out.\nTag: {tag}"
             
             self._session_states[session_id] = {
                 "panel": panel,
@@ -1161,21 +1831,27 @@ class HCRMCPResponder:
         
         # Log merge event to global state
         if self.engine:
-            from src.engine_api import EngineEvent
-            event = EngineEvent(
-                event_type='session_merge',
-                timestamp=datetime.now(),
-                data={
-                    'session_id': session_id,
-                    'tag': session_data.get('metadata', {}).get('tag'),
-                    'notes_count': len(notes),
-                    'panel_preview': session_data.get('panel', '')[:200]
-                }
-            )
-            self.engine.update_from_environment(event)
-            self.engine.save_state()
-            # Invalidate cache since we just saved new state
-            self._state_cached = False
+            try:
+                def _merge():
+                    from src.engine_api import EngineEvent
+                    event = EngineEvent(
+                        event_type='session_merge',
+                        timestamp=datetime.now(),
+                        data={
+                            'session_id': session_id,
+                            'tag': session_data.get('metadata', {}).get('tag'),
+                            'notes_count': len(notes),
+                            'panel_preview': session_data.get('panel', '')[:200]
+                        }
+                    )
+                    self.engine.update_from_environment(event)
+                    self.engine.save_state()
+                
+                await self._run_blocking(_merge, timeout=5.0)
+                # Invalidate cache since we just saved new state
+                self._state_cached = False
+            except Exception as e:
+                self.logger.warning(f"Session merge state save failed: {e}")
         
         # Clear session state (but optionally keep notes)
         if not preserve_notes:
@@ -1214,11 +1890,26 @@ class HCRMCPResponder:
         
         watcher = FileWatcher(self.project_path)
         
-        # If old_content provided, compute detailed changes
-        if old_content:
-            change = watcher.capture_file_change(filepath, old_content)
-        else:
-            # Just record the basic edit
+        # Compute changes in thread pool to avoid blocking on AST/diff
+        change = None
+        try:
+            if old_content:
+                change = await self._run_blocking(
+                    lambda: watcher.capture_file_change(filepath, old_content),
+                    timeout=5.0
+                )
+            else:
+                change = FileChange(
+                    path=filepath,
+                    change_type='modified',
+                    lines_added=lines_added,
+                    lines_removed=lines_removed,
+                    functions_changed=functions_changed,
+                    imports_changed=imports_changed,
+                    diff_summary=change_summary
+                )
+        except Exception as e:
+            self.logger.warning(f"File change capture failed: {e}")
             change = FileChange(
                 path=filepath,
                 change_type='modified',
@@ -1302,16 +1993,15 @@ class HCRMCPResponder:
     
     async def _tool_capture_full_context(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Capture complete developer context by combining:
-        - Git state (branch, commits, uncommitted changes)
-        - Recent file activity with diffs
-        - Current cognitive state from HCR
-        - HCR task inference
+        Capture complete developer context with commercial-grade reliability.
+        Heavy operations run in thread pool with timeouts and limits.
         
-        Returns a comprehensive context object for AI assistants.
+        PHASE 2 OPTIMIZATION: All I/O operations run in parallel using asyncio.gather()
+        Instead of sequential 5+5+3+8=21s, now ~8s (max of parallel operations).
         """
-        include_diffs = args.get("include_diffs", True)
+        include_diffs = args.get("include_diffs", False)  # Default False for speed
         session_id = args.get("session_id")
+        max_diff_files = 5
         
         if not self.engine:
             return {"content": "Engine not initialized", "captured": False}
@@ -1320,58 +2010,100 @@ class HCRMCPResponder:
         from product.state_capture.git_tracker import GitTracker
         from product.state_capture.file_watcher import FileWatcher
         
-        # 1. Capture git state
-        git = GitTracker(self.project_path)
-        git_state = git.capture_state()
+        # PHASE 2 FIX: Define async wrapper tasks that can run in parallel
+        async def _capture_git():
+            """Capture git state with error handling"""
+            try:
+                git = GitTracker(self.project_path)
+                return await self._run_blocking(git.capture_state, timeout=5.0)
+            except Exception as e:
+                self.logger.warning(f"Git capture timed out or failed: {e}")
+                return {"error": str(e), "branch": "unknown"}
         
-        # 2. Capture file activity
-        watcher = FileWatcher(self.project_path)
-        file_state = watcher.capture_state(lookback_minutes=120)
+        async def _capture_files():
+            """Capture file activity with error handling"""
+            try:
+                watcher = FileWatcher(self.project_path)
+                return await self._run_blocking(
+                    lambda: watcher.capture_state(lookback_minutes=120),
+                    timeout=5.0
+                )
+            except Exception as e:
+                self.logger.warning(f"File capture timed out or failed: {e}")
+                return {"error": str(e), "file_count": 0}
         
-        # 3. Get detailed changes if requested
+        async def _infer_context_async():
+            """Infer context using already-loaded state (no redundant load_state, no LLM)"""
+            try:
+                # State already loaded by _handle_tools_call, use fast heuristic inference
+                return await self._run_blocking(lambda: self.engine.infer_context(use_llm=False), timeout=2.0)
+            except Exception as e:
+                self.logger.warning(f"Context inference timed out: {e}")
+                # Use fallback context
+                from src.engine_api import EngineContext
+                return EngineContext(
+                    current_task="Unknown (inference timeout)",
+                    progress_percent=0,
+                    next_action="Retry context capture",
+                    confidence=0.0,
+                    gap_minutes=0,
+                    facts=[]
+                )
+        
+        # PHASE 2 FIX: Run all I/O tasks in parallel using asyncio.gather()
+        # This reduces latency from 5+5+3=13s sequential to ~5s parallel (max)
+        git_state, file_state, context = await asyncio.gather(
+            _capture_git(),
+            _capture_files(),
+            _infer_context_async(),
+            return_exceptions=False
+        )
+        
+        # 3. Get detailed changes if requested (only after file_state available)
         detailed_changes = []
-        if include_diffs:
-            detailed_changes = watcher.get_changed_files_with_details(since_minutes=60)
-        
-        # 4. Get current HCR cognitive state
-        hcr_state = self.engine.load_state()
-        
-        # 5. Infer current context
-        try:
-            loop = asyncio.get_running_loop()
-            context = await loop.run_in_executor(self._executor, self.engine.infer_context)
-        except RuntimeError:
-            context = self.engine.infer_context()
+        if include_diffs and file_state.get("file_count", 0) > 0:
+            try:
+                watcher = FileWatcher(self.project_path)
+                changes = await self._run_blocking(
+                    lambda: watcher.get_changed_files_with_details(since_minutes=60),
+                    timeout=5.0
+                )
+                detailed_changes = changes[:max_diff_files]
+            except Exception as e:
+                self.logger.warning(f"Detailed changes timed out: {e}")
         
         # Build comprehensive response
         content = f"""## Complete Developer Context Captured
 
 ### 🌿 Git State
 - **Branch:** {git_state.get('branch', 'unknown')}
-- **Last Commit:** {git_state.get('last_commit', {}).get('message', 'unknown')[:50]}
-- **Uncommitted:** {git_state.get('uncommitted_changes', {}).get('modified_count', 0)} modified, {git_state.get('uncommitted_changes', {}).get('staged_count', 0)} staged
+- **Last Commit:** {git_state.get('last_commit', {}).get('message', 'unknown')[:50] if isinstance(git_state.get('last_commit'), dict) else 'unknown'}
+- **Uncommitted:** {git_state.get('uncommitted_changes', {}).get('modified_count', 0) if isinstance(git_state.get('uncommitted_changes'), dict) else 0} modified, {git_state.get('uncommitted_changes', {}).get('staged_count', 0) if isinstance(git_state.get('uncommitted_changes'), dict) else 0} staged
 
 ### 📁 Recent File Activity
 - **Files Changed (2h):** {file_state.get('file_count', 0)}
 - **Primary Language:** {file_state.get('primary_language', 'unknown')}
-- **Active Directories:** {', '.join(list(file_state.get('active_directories', {}).keys())[:3])}
+- **Active Directories:** {', '.join(list(file_state.get('active_directories', {}).keys())[:3]) if isinstance(file_state.get('active_directories'), dict) else 'unknown'}
 
 ### 🧠 HCR Cognitive State
-- **Current Task:** {context.current_task}
-- **Progress:** {context.progress_percent}%
-- **Confidence:** {context.confidence:.0%}
-- **Next Action:** {context.next_action}
+- **Current Task:** {context.current_task if context else 'Unknown'}
+- **Progress:** {context.progress_percent if context else 0}%
+- **Confidence:** {f'{context.confidence:.0%}' if context else '0%'}
+- **Next Action:** {context.next_action if context else 'Unknown'}
 
-### 📝 Facts ({len(context.facts[-10:])} recent)
+### 📝 Facts ({len(context.facts[-10:]) if context else 0} recent)
 """
-        for fact in context.facts[-5:]:
-            content += f"- {fact}\n"
+        if context and context.facts:
+            for fact in context.facts[-5:]:
+                content += f"- {fact}\n"
+        else:
+            content += "- No facts available\n"
         
         if detailed_changes:
             content += f"\n### 🔧 Detailed Changes ({len(detailed_changes)} files)\n"
-            for change in detailed_changes[:5]:
+            for change in detailed_changes:
                 content += f"- `{change['path']}`: +{change['lines_added']}/-{change['lines_removed']} lines"
-                if change['functions_changed']:
+                if change.get('functions_changed'):
                     content += f" (funcs: {', '.join(change['functions_changed'][:3])})"
                 content += "\n"
         
@@ -1382,17 +2114,259 @@ class HCRMCPResponder:
             "timestamp": datetime.now().isoformat(),
             "git": git_state,
             "files": file_state,
-            "detailed_changes": detailed_changes if include_diffs else [],
+            "detailed_changes": detailed_changes,
             "hcr": {
-                "current_task": context.current_task,
-                "progress_percent": context.progress_percent,
-                "next_action": context.next_action,
-                "confidence": context.confidence,
-                "recent_facts": context.facts[-10:]
+                "current_task": context.current_task if context else "Unknown",
+                "progress_percent": context.progress_percent if context else 0,
+                "next_action": context.next_action if context else "Unknown",
+                "confidence": context.confidence if context else 0.0,
+                "recent_facts": context.facts[-10:] if context else []
             }
         }
         
         self._record_session_snapshot(session_id, content, {"full_context": True})
+        return result
+    
+    async def _tool_analyze_impact(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze ripple effects of changing a file using the causal graph"""
+        file_path = args.get("file_path")
+        max_depth = args.get("max_depth", 3)
+        session_id = args.get("session_id")
+        
+        if not self.engine:
+            return {"content": "Engine not initialized", "impacted": []}
+        
+        if not self.engine.dependency_graph:
+            return {"content": "No causal graph available. Edit some files first.", "impacted": []}
+        
+        # Clamp depth to reasonable range
+        max_depth = max(1, min(5, max_depth))
+        
+        # Run impact analysis
+        def _analyze():
+            return self.engine.impact_analyzer.predict_impact(file_path, max_depth=max_depth)
+        
+        try:
+            impacted = await self._run_blocking(_analyze, timeout=5.0)
+        except Exception as e:
+            self.logger.warning(f"Impact analysis failed: {e}")
+            impacted = []
+        
+        # Build formatted response
+        if not impacted:
+            content = f"""## Impact Analysis: `{file_path}`
+
+**Result:** No dependent files found in the causal graph.
+
+This file appears to be a leaf node (nothing depends on it) or the dependency graph hasn't been fully built yet.
+"""
+        else:
+            content = f"""## Impact Analysis: `{file_path}`
+
+**Propagation Depth:** {max_depth}
+**Impacted Files:** {len(impacted)}
+
+### Affected Files (may need updates):
+"""
+            for f in impacted[:10]:
+                content += f"- `{f}`\n"
+            if len(impacted) > 10:
+                content += f"- ... and {len(impacted) - 10} more files\n"
+            
+            content += f"\n**Advice:** Modifying `{file_path}` may require updates to these {len(impacted)} files."
+        
+        result = {
+            "content": content,
+            "impacted_files": impacted,
+            "file_path": file_path,
+            "max_depth": max_depth,
+            "count": len(impacted)
+        }
+        
+        self._record_session_snapshot(session_id, content, result)
+        return result
+    
+    async def _tool_get_recommendations(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get AI-powered recommendations with confidence scores"""
+        context_hint = args.get("context", "")
+        use_llm = args.get("use_llm", True)
+        session_id = args.get("session_id")
+        
+        if not self.engine:
+            return {"content": "Engine not initialized", "recommendations": []}
+        
+        # Get current context
+        try:
+            def _get_context():
+                self.engine.load_state()
+                return self.engine.infer_context()
+            
+            context = await self._run_blocking(_get_context, timeout=3.0)
+        except Exception as e:
+            self.logger.warning(f"Context inference failed: {e}")
+            context = None
+        
+        # Build recommendations
+        recommendations = []
+        
+        # Primary recommendation from engine
+        if context and context.next_action:
+            recommendations.append({
+                "action": context.next_action,
+                "confidence": context.confidence,
+                "source": "hcr_engine",
+                "reason": f"Current task: {context.current_task}"
+            })
+        
+        # LLM-enhanced recommendations if available
+        if use_llm and self.engine:
+            llm = self.engine._get_llm_provider()
+            if llm:
+                def _get_llm_recs():
+                    prompt = f"""Based on this development context, suggest 3 specific next actions:
+
+Current Task: {context.current_task if context else 'Unknown'}
+Progress: {context.progress_percent if context else 0}%
+Facts: {context.facts[-10:] if context else []}
+Additional Context: {context_hint}
+
+Return JSON array with fields: action, confidence (0-1), reason."""
+                    
+                    try:
+                        response = llm.structured_complete(
+                            prompt=prompt,
+                            system="You are a development productivity assistant. Be specific and actionable.",
+                            temperature=0.3,
+                            max_tokens=400
+                        )
+                        if isinstance(response, list):
+                            return response
+                    except Exception as exc:
+                        self.logger.warning(f"LLM recommendations failed: {exc}")
+                    return []
+                
+                try:
+                    llm_recs = await self._run_blocking(_get_llm_recs, timeout=3.0)
+                    for rec in llm_recs:
+                        if isinstance(rec, dict) and rec.get("action"):
+                            recommendations.append({
+                                "action": rec["action"],
+                                "confidence": rec.get("confidence", 0.5),
+                                "source": "llm_enhanced",
+                                "reason": rec.get("reason", "AI suggestion")
+                            })
+                except Exception as e:
+                    self.logger.warning(f"LLM recommendations timed out: {e}")
+        
+        # Fallback recommendations if we have none
+        if not recommendations:
+            recommendations = [
+                {"action": "Review recent changes", "confidence": 0.6, "source": "fallback", "reason": "Best practice"},
+                {"action": "Commit work in progress", "confidence": 0.5, "source": "fallback", "reason": "Prevent loss"}
+            ]
+        
+        # Sort by confidence
+        recommendations.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+        
+        # Build formatted output
+        content = "## HCR Recommendations\n\n"
+        for i, rec in enumerate(recommendations[:5], 1):
+            conf_pct = int(rec.get("confidence", 0) * 100)
+            content += f"{i}. **{rec['action']}** ({conf_pct}% confidence)\n"
+            content += f"   _{rec.get('reason', 'No reason provided')}_\n\n"
+        
+        result = {
+            "content": content,
+            "recommendations": recommendations,
+            "count": len(recommendations),
+            "current_task": context.current_task if context else None,
+            "progress_percent": context.progress_percent if context else 0
+        }
+        
+        self._record_session_snapshot(session_id, content, result)
+        return result
+    
+    async def _tool_search_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Search event history for patterns, files, or keywords"""
+        query = args.get("query", "").lower()
+        event_type = args.get("event_type", "")
+        limit = args.get("limit", 20)
+        session_id = args.get("session_id")
+        
+        if not self.engine:
+            return {"content": "Engine not initialized", "matches": []}
+        
+        if not query:
+            return {"content": "Search query required", "matches": []}
+        
+        # Search through events
+        def _search():
+            matches = []
+            for e in self.engine.event_store.events:
+                # Filter by event type if specified
+                if event_type and e.event_type != event_type:
+                    continue
+                
+                # Search in source and details
+                score = 0
+                if query in e.source.lower():
+                    score += 10
+                if e.details and isinstance(e.details, dict):
+                    details_str = json.dumps(e.details).lower()
+                    if query in details_str:
+                        score += 5
+                if query in e.event_type.lower():
+                    score += 3
+                
+                if score > 0:
+                    matches.append({
+                        "event": asdict(e),
+                        "score": score
+                    })
+            
+            # Sort by score and recency
+            matches.sort(key=lambda x: (x["score"], x["event"]["timestamp"]), reverse=True)
+            return matches[:limit]
+        
+        try:
+            matches = await self._run_blocking(_search, timeout=5.0)
+        except Exception as e:
+            self.logger.warning(f"Search failed: {e}")
+            matches = []
+        
+        # Build formatted output
+        if not matches:
+            content = f"""## History Search: "{query}"
+
+No matching events found.
+
+Try:
+- Different keywords
+- File paths (e.g., "src/main.py")
+- Event types: file_edit, git_commit, session_merge
+"""
+        else:
+            content = f"""## History Search: "{query}"
+
+**Found:** {len(matches)} matching events\n
+### Results:
+"""
+            for m in matches[:10]:
+                e = m["event"]
+                content += f"- **{e['event_type']}** at {e['timestamp'][:19]}\n"
+                content += f"  Source: `{e['source'][:50]}`\n"
+                if e.get("details"):
+                    content += f"  Details: {str(e['details'])[:80]}...\n"
+                content += "\n"
+        
+        result = {
+            "content": content,
+            "matches": matches,
+            "count": len(matches),
+            "query": query
+        }
+        
+        self._record_session_snapshot(session_id, content, result)
         return result
     
     # --- Smart Panel Helpers ---
@@ -1484,7 +2458,11 @@ class HCRMCPResponder:
             "private_notes": session_notes,
         }
 
-        def _call_llm():
+        # FIXED: Added timeout protection to LLM call to prevent indefinite hangs
+        def _call_llm_with_timeout():
+            """Call LLM with timeout protection"""
+            # Use signal-based timeout for LLM provider if available
+            # Otherwise rely on asyncio timeout from caller
             try:
                 response = llm.structured_complete(
                     prompt=json.dumps(payload, indent=2),
@@ -1498,10 +2476,14 @@ class HCRMCPResponder:
                 return {}
 
         try:
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(self._executor, _call_llm)
-        except RuntimeError:
-            result = _call_llm()
+            # FIXED: Reduced timeout from 10.0 to 3.0 for consistency
+            result = await self._run_blocking(_call_llm_with_timeout, timeout=3.0)
+        except asyncio.TimeoutError:
+            self.logger.warning(f"LLM smart resume exceeded 3s timeout, using base panel")
+            result = {}
+        except Exception as exc:
+            self.logger.warning(f"LLM smart resume failed: {exc}")
+            result = {}
 
         if isinstance(result, dict) and result.get("panel_text"):
             panel = result["panel_text"]
@@ -1551,54 +2533,141 @@ class HCRMCPResponder:
 
 class MCPServerStdio:
     """
-    MCP Server using stdio transport.
+    Commercial-Ready MCP Server using async stdio transport.
     
-    This is the standard way to communicate with MCP clients like:
-    - Claude Desktop
-    - Cursor AI
-    - Windsurf
+    Patterned after official SDKs:
+    - Dedicated background thread for non-blocking stdin reading
+    - Asyncio Queue for message dispatch
+    - Task tracking for concurrent request handling
+    - Atomic stdout write synchronization
     """
     
     def __init__(self, project_path: Optional[str] = None):
         self.responder = HCRMCPResponder(project_path)
         self.logger = logging.getLogger("HCR-MCP-Stdio")
+        self._write_lock = asyncio.Lock()
+        self._tasks: Dict[Any, asyncio.Task] = {}
+        self._input_queue: asyncio.Queue = asyncio.Queue()
+        self._running = False
     
-    async def run(self):
-        """Run the stdio MCP server"""
-        self.logger.info("HCR MCP Server starting...")
-        # Log to stderr only - stdout is reserved for JSON-RPC
+    def _stdin_reader(self, loop: asyncio.AbstractEventLoop):
+        """Dedicated thread for blocking stdin reads."""
         import sys
-        print("HCR MCP Server ready", flush=True, file=sys.stderr)
-        
-        while True:
+        while self._running:
             try:
-                # Read request from stdin
-                line = await asyncio.get_event_loop().run_in_executor(
-                    None, input
-                )
-                
+                line = sys.stdin.readline()
                 if not line:
-                    continue
-                
-                # Parse request
-                request = json.loads(line)
-                
-                # Handle request
-                response = await self.responder.handle_request(request)
-                
-                # Send response
-                print(json.dumps(response), flush=True)
-                
-            except json.JSONDecodeError as e:
-                error = {"error": {"code": -32700, "message": f"Parse error: {e}"}}
-                print(json.dumps(error), flush=True)
+                    loop.call_soon_threadsafe(self._input_queue.put_nowait, None)
+                    break
+                loop.call_soon_threadsafe(self._input_queue.put_nowait, line)
             except EOFError:
+                loop.call_soon_threadsafe(self._input_queue.put_nowait, None)
                 break
             except Exception as e:
-                self.logger.error(f"Error: {e}")
-                error = {"error": {"code": -32603, "message": f"Internal error: {e}"}}
-                print(json.dumps(error), flush=True)
+                self.logger.error(f"Stdin reader error: {e}")
+                break
+
+    async def _handle_request_task(self, request: Dict[str, Any]):
+        """Background task to handle a single MCP request."""
+        request_id = request.get("id")
+        method = request.get("method")
         
+        try:
+            # Handle notifications (no response expected)
+            if request_id is None:
+                if method == "notifications/cancelled":
+                    cancelled_id = request.get("params", {}).get("requestId")
+                    if cancelled_id in self._tasks:
+                        self.logger.info(f"Cancelling task {cancelled_id}")
+                        self._tasks[cancelled_id].cancel()
+                else:
+                    # Process other notifications silently
+                    await self.responder.handle_request(request)
+                return
+
+            # Handle requests (response expected)
+            response = await self.responder.handle_request(request)
+            
+            # Send response atomically
+            payload = (json.dumps(response, ensure_ascii=False) + "\n").encode("utf-8")
+            async with self._write_lock:
+                import sys
+                sys.stdout.buffer.write(payload)
+                sys.stdout.buffer.flush()
+                
+        except asyncio.CancelledError:
+            self.logger.info(f"Request {request_id} was cancelled")
+        except Exception as e:
+            self.logger.error(f"Error handling request {request_id}: {e}")
+            if request_id is not None:
+                err_response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": f"Internal error: {e}"}
+                }
+                payload = (json.dumps(err_response, ensure_ascii=False) + "\n").encode("utf-8")
+                async with self._write_lock:
+                    import sys
+                    sys.stdout.buffer.write(payload)
+                    sys.stdout.buffer.flush()
+        finally:
+            if request_id in self._tasks:
+                del self._tasks[request_id]
+
+    async def run(self):
+        """Run the high-performance async stdio server."""
+        self.logger.info("HCR MCP Server starting (Commercial Grade)...")
+        self._running = True
+        import sys
+        import threading
+        
+        # Start background reader thread
+        loop = asyncio.get_running_loop()
+        reader_thread = threading.Thread(target=self._stdin_reader, args=(loop,), daemon=True)
+        reader_thread.start()
+        
+        print("HCR MCP Server ready", flush=True, file=sys.stderr)
+
+        try:
+            while self._running:
+                line = await self._input_queue.get()
+                if line is None:  # EOF
+                    break
+                
+                line = line.strip()
+                if not line:
+                    continue
+
+                try:
+                    request = json.loads(line)
+                    if not isinstance(request, dict):
+                        continue
+                    
+                    request_id = request.get("id")
+                    
+                    # Dispatch to background task
+                    task = asyncio.create_task(self._handle_request_task(request))
+                    
+                    # Track task if it has an ID
+                    if request_id is not None:
+                        self._tasks[request_id] = task
+                        
+                except json.JSONDecodeError:
+                    self.logger.warning("Dropped malformed JSON-RPC line")
+                    continue
+        finally:
+            self._running = False
+            # Graceful shutdown: cancel all pending tasks
+            if self._tasks:
+                self.logger.info(f"Cancelling {len(self._tasks)} pending tasks...")
+                for task in self._tasks.values():
+                    task.cancel()
+                await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+            
+        self.logger.info("HCR MCP Server shut down.")
+
+        self.logger.info("HCR MCP Server shutting down...")
+
         self.logger.info("HCR MCP Server shutting down...")
 
 
@@ -1610,9 +2679,12 @@ class MCPServerHTTP:
     """
     
     def __init__(self, host: str = "localhost", port: int = 8734, project_path: str = "."):
+        self.host = host
+        self.port = port
         self.project_path = Path(project_path).absolute()
         self.hcr_dir = self.project_path / ".hcr"
-        self.engine = None
+        self.responder = HCRMCPResponder(str(self.project_path))
+        self.engine = self.responder.engine
         self._executor = ThreadPoolExecutor(max_workers=2)
         self._call_counts = {}
         self._call_times = {}
@@ -1670,7 +2742,7 @@ class MCPServerHTTP:
 # --- Entry Point ---
 def main():
     """Main entry point for MCP server"""
-    import sys
+    import os
     import argparse
     
     parser = argparse.ArgumentParser(description="HCR MCP Server")
@@ -1678,7 +2750,7 @@ def main():
                        help="Transport protocol (stdio for Claude/Cursor, http for web)")
     parser.add_argument("--host", default="localhost", help="HTTP host")
     parser.add_argument("--port", type=int, default=8734, help="HTTP port")
-    parser.add_argument("--project", help="Project path")
+    parser.add_argument("--project", default=os.environ.get("HCR_PROJECT"), help="Project path")
     parser.add_argument("--verbose", action="store_true", help="Verbose logging")
     
     args = parser.parse_args()

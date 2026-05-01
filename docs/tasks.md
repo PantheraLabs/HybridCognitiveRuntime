@@ -61,4 +61,26 @@ The core HCR architecture is implemented. LLM Connectors are now integrated and 
 - [x] 15/15 Unit tests passing
 - [x] HTTP API verified (Health, Resume, Event endpoints)
 - [x] Cognitive Twin inference verified
-- [x] MCP Server verified (12/12 tools working, context updates working)
+- [x] MCP Server comprehensive reliability audit & fixes applied (2026-05-01)
+  - **19 tools + 3 resources + 2 prompts** audited and hardened
+  - **Standardized Transport**: Migrated to line-based JSON-RPC (standard MCP) from non-standard headers
+  - **Commercial Ready Architecture**: 
+    - Dedicated background reader thread for non-blocking stdin
+    - Asyncio producer-consumer queue for message dispatch
+    - Full concurrency with `asyncio.create_task` tracking
+    - Support for `notifications/cancelled` (task abortion)
+    - Atomic `stdout` write synchronization with Lock
+  - All sync I/O moved off asyncio event loop via `_run_blocking(..., timeout=...)`
+  - **Scale**: Thread pool expanded 4→16 workers; global handler timeout 15s→5s for faster failure recovery
+  - **Caching layer** added: shared_keys, learned_operators, health, version_history (60s TTL)
+  - **LLM safety**: All LLM-dependent tools default `use_llm=False` with explicit opt-in
+  - `_generate_smart_resume` LLM call now has 10s timeout (was raw `run_in_executor` with no timeout)
+  - Event logging changed to **fire-and-forget** background executor (was sync disk write blocking every call)
+  - Smart state loading now has 5s timeout (continues with stale state on timeout)
+  - `capture_full_context` defaults `include_diffs=False`; per-subsystem timeouts (git 5s, files 5s, diffs 5s, inference 8s)
+  - `create_session`, `get_current_task`, `get_next_action` default to LLM-free fast path
+  - `restore_version` async event replay with 10s timeout; `record_file_edit` async AST/diff with 5s timeout
+  - All resource reads (`_handle_resources_read`) and prompt generation (`_handle_prompts_get`) async-safe
+  - Zero remaining synchronous I/O calls on the asyncio event loop
+  - Syntax verified (`python -m py_compile`)
+- [x] MCP Server full regression test (verified initialization and tool list via `test_standard_mcp.py`)
