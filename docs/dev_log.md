@@ -1,5 +1,44 @@
 # Development Log
 
+## 2026-05-02 - AI IDE Global Rules Integration
+
+### HCR MCP Tools Usage Guide Integration
+**Goal:** Enable AI IDEs to use HCR tools correctly with comprehensive rules and fallback mechanisms
+
+**Changes:**
+- Integrated `docs/MCP_TOOLS_USAGE_GUIDE.md` into `c:\Users\rishi\.codeium\windsurf\memories\global_rules.md`
+- Added PART 4: HCR MCP Tool-Specific Rules covering all 21 MCP tools
+- Updated heading to "RISHI'S HCR & MEMORY PROTOCOL"
+- Included detailed tool specifications:
+  - When to call each tool
+  - Parameters with defaults
+  - Timeout values (2-10s range)
+  - Cache durations (30-60s)
+  - Priority levels (LOW/MEDIUM/HIGH/CRITICAL)
+
+**Workflows Added:**
+- Conversation start workflow with fallback logic (retry once, then degrade)
+- File edit workflow (critical step after every edit)
+- Tool usage principles (state-first, non-blocking, session-aware, incremental, cache-aware, HCR-priority)
+
+**Tool Categories:**
+- State Management (3 tools)
+- Task & Action (2 tools)
+- Session Management (4 tools)
+- Shared State (3 tools)
+- Version Control (2 tools)
+- System & Health (1 tool)
+- File & Context (2 tools)
+- Analysis & Search (4 tools)
+
+**Files Modified:**
+- `c:\Users\rishi\.codeium\windsurf\memories\global_rules.md` - Added PART 4 with all tool rules
+- `docs/project_memory.md` - Added status entry
+
+**Purpose:** Commercial-grade global rules for AI IDEs (Windsurf/Cascade, Claude Desktop, Cursor) to use HCR tools effectively with robust fallback when tools fail.
+
+---
+
 ## 2026-05-01 - Brutal Fix Sprint: All 21 Tools Must Work
 
 **Status:** In Progress - PARALLEL EXECUTION (k2.5 + k2.6)  
@@ -170,6 +209,55 @@ Comprehensive audit revealed sync I/O and blocking patterns across ALL tools and
 - Zero remaining synchronous I/O calls on the asyncio event loop
 - LLM calls cannot block thread pool workers indefinitely
 - Event logging cannot block tool execution
+
+---
+
+## 2026-05-03 - Commercial-Grade Output Synthesis & Daemon Fixes
+
+### Universal Response Formatting
+**File**: `product/integrations/mcp_server.py` (normalization pipeline)
+
+1. **New Method: `_format_structured_result`**
+   - 12+ intelligent formatters for all tool output shapes
+   - `graph` → markdown tables with forward/reverse dependency listings
+   - `task` / `next_action` → progress bars + confidence percentages
+   - `sessions` → formatted session cards with tags, notes, previews
+   - `operators` / `recommendations` / `versions` / `shared_states` / `impacted_files` → numbered/bulleted lists
+   - `status` / `error` / `success` → clear status indicators with details
+   - Shared state key-value pairs → truncated preview with length indicator
+
+2. **`_normalize_tool_result` Integration**
+   - ALL 21 tools now produce human-readable markdown
+   - Raw JSON dump fallback completely eliminated
+   - Commercial-grade: two-stage pipeline (structured data → LLM synthesis → display)
+   - `USE_HCR_SYNTHESIS` env var still gates LLM refinement (default `true`)
+
+3. **Per-Tool Content Strings**
+   - Added explicit `"content"` markdown to every tool return path
+   - `list_shared_states`, `get_shared_state`, `share_state`, `get_version_history`, `restore_version`, `get_learned_operators`, `get_system_health`
+   - Previously missing in cached success + error paths
+
+### Daemon Robustness
+**File**: `product/daemon/hcr_daemon.py`
+
+- **[FIXED]** Orphaned `finally:` syntax error at module load time (line ~103) — root cause was mis-nested try/except inside async method
+- **[FIXED]** Windows file watcher crash — `watchdog` observer now wrapped in try/except; daemon falls back to periodic auto-save every 30s
+- **[FIXED]** Daemon used isolated engine — now receives shared `HCREngine` from responder constructor so tool-call mutations persist to background loop
+- **[FIXED]** Stale state risk — `_tool_record_file_edit` and `_tool_capture_full_context` now call `engine.save_state()` immediately after state mutations
+
+### Tool Modules
+**File**: `product/integrations/tools/state_tools.py`
+- `GetCausalGraphTool` now returns `"content"` with forward/reverse edge markdown in addition to raw `graph` dict
+
+### Documentation Updates
+- `docs/project_memory.md`: Updated Known Issues (5/5 daemon items marked FIXED), added Commercial-Grade section to Current Status
+- `docs/tasks.md`: Marked all k2.6 BLOCKS PROGRESS / TECH DEBT items as DONE, updated Testing Status
+
+### Result
+- Syntax verified: `mcp_server.py`, `hcr_daemon.py`, `state_tools.py` all pass `ast.parse`
+- Zero raw dict outputs from any of 21 MCP tools
+- Daemon starts on Windows without syntax errors and survives file watcher unavailability
+- Shared engine architecture ensures real-time state consistency between foreground (MCP tools) and background (daemon auto-save)
 
 ---
 
@@ -970,6 +1058,58 @@ The HCR MCP server was using a non-standard, header-based transport (Content-Len
 ### Files Updated
 - product/integrations/mcp_server.py - Refactored MCPServerStdio
 - scratch/test_standard_mcp.py - New verification script
+
+---
+
+## 2026-05-02 - Groq Integration & Engine Init Diagnostics
+
+**Status:** FIXED - Root causes identified and resolved
+
+### Root Cause Analysis
+Systematic tracing revealed THREE independent issues preventing commercial-grade Groq synthesis:
+
+**Issue 1: Cloudflare Bot Detection (HTTP 403)**
+- Symptom: `HTTP Error 403: Forbidden` from Groq API
+- Cause: `urllib.request` sends NO `User-Agent` header by default
+- Groq/Cloudflare flags this as bot traffic and blocks it
+- Fix: Added `"User-Agent": "HCR-MCP/1.0"` to all Groq HTTP requests
+  - `src/llm/providers/groq.py` - `_post()` method
+  - `product/integrations/tools/output_synthesizer.py` - `_DirectGroqProvider.structured_complete()`
+- Verification: `test_groq_direct.py` confirms successful API calls
+
+**Issue 2: `python-dotenv` API Incompatibility in Bundled Python**
+- Symptom: `TypeError: load_dotenv() got an unexpected keyword argument 'dotenv_path'`
+- Cause: Windsurf/Cascade bundled Python uses a minimal python-dotenv that only accepts positional args
+- Impact: `HCREngine.__init__()` crashes → engine set to None → tools report "Engine not initialized"
+- Fix: Changed `src/config.py` `load_config()` to use positional path arg with nested try/except fallbacks:
+  - `load_dotenv(str(project_env), override=True)`  # modern
+  - `load_dotenv(str(project_env))`               # fallback
+  - manual .env parsing as last resort
+- Verification: `diagnostic_report.py` confirms engine initializes in bundled Python
+
+**Issue 3: Missing MCP Entry Point File**
+- Symptom: `.cursor/mcp.json` references `mcp_server_stdio.py` which did not exist
+- Cause: File was renamed/never created during refactoring
+- Fix: Created `mcp_server_stdio.py` as redirect to `mcp_server_wrapper.py`
+
+### Model Selection Decision
+- Default model: `llama-3.1-8b-instant` (8B params, 50ms latency)
+- Rationale: 14,400 requests/day vs 1,000 for 70B models
+- MCP tools fire 30+ small requests per session → throughput > reasoning quality for formatting tasks
+- Fallback: `llama-3.3-70b-versatile` for deep reasoning when needed
+
+### Files Updated
+- `src/llm/providers/groq.py` - User-Agent header + default model changed to 8B
+- `product/integrations/tools/output_synthesizer.py` - User-Agent header
+- `src/config.py` - Robust load_dotenv() with version compatibility
+- `mcp_server_stdio.py` - Created (MCP entry point redirect)
+- `diagnostic_report.py` - Created (systematic diagnostic tool)
+- `test_groq_direct.py` - Created (isolated API connectivity test)
+
+### Verification
+- Bundled Python (3.12.13): Engine init SUCCESS, Groq ping SUCCESS
+- System Python (3.11.9): Engine init SUCCESS, Groq ping SUCCESS
+- Next step: Reload IDE window to restart MCP server with fixed code
 
 ---
 

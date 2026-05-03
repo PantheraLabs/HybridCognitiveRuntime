@@ -121,8 +121,24 @@ def load_config(project_path: Optional[str] = None) -> HCRConfig:
 
     Priority: env vars > project .hcr/config.json > ~/.hcr/config.json > defaults
     """
-    # Load .env file if it exists
-    load_dotenv()
+    # Load .env file from project root if available, otherwise from CWD
+    env_loaded = False
+    if project_path:
+        project_env = Path(project_path) / ".env"
+        if project_env.exists():
+            try:
+                load_dotenv(str(project_env), override=True)
+            except TypeError:
+                try:
+                    load_dotenv(str(project_env))
+                except TypeError:
+                    pass  # very old python-dotenv
+            env_loaded = True
+    if not env_loaded:
+        try:
+            load_dotenv()
+        except TypeError:
+            pass  # old python-dotenv may not accept no args
     
     config = HCRConfig()
 

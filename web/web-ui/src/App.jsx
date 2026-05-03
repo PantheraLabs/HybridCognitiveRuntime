@@ -4,6 +4,8 @@ import Landing from './pages/Landing';
 import Pricing from './pages/Pricing';
 import Dashboard from './pages/Dashboard';
 import Auth from './pages/Auth';
+import Onboarding from './pages/Onboarding';
+import GitHubCallback from './pages/GitHubCallback';
 
 function App() {
   return (
@@ -14,6 +16,8 @@ function App() {
         <Route path="/login" element={<Auth mode="login" />} />
         <Route path="/signup" element={<Auth mode="signup" />} />
         <Route path="/app" element={<Dashboard />} />
+        <Route path="/onboarding" element={<Onboarding />} />
+        <Route path="/auth/github/callback" element={<GitHubCallback />} />
       </Routes>
     </Router>
   );

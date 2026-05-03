@@ -16,6 +16,7 @@ export default function Navbar() {
         <div className="hidden md:flex items-center gap-10 mono-ui text-slate-500">
           <a href="/#features" className="hover:text-white transition-colors">Causal Map</a>
           <Link to="/pricing" className="hover:text-white transition-colors">Tiers</Link>
+          <Link to="/onboarding" className="hover:text-white transition-colors">Onboarding</Link>
           <a href="https://github.com" className="hover:text-white transition-colors">Git</a>
           <div className="flex items-center gap-2 text-blue-500/50">
              <Activity className="w-3 h-3" />

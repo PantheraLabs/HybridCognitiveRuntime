@@ -14,6 +14,7 @@ This makes HCR the standard state infrastructure layer for AI development tools.
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from collections import defaultdict
@@ -22,6 +23,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, asdict
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(dotenv_path=None, override=False):
+        pass
 
 SMART_RESUME_SYSTEM = """You are the HCR "Resume Without Re-Explaining" formatter.\nReturn JSON with keys:\n- panel_text: fully formatted panel (markdown) matching the classic HCR assistant layout.\n- tone_hint: short note (e.g., high_confidence / low_confidence).\n- summary: single sentence TL;DR.\nRules:\n- Preserve headings and emojis (⏱️, 📋, 📊, 👉, ✅, 📝).\n- Keep suggestions actionable.\n- If data missing, explicitly say so instead of hallucinating.\n- Reflect confidence and time gap accurately.\n"""
 
@@ -80,8 +87,18 @@ class HCRMCPResponder:
     """
     
     def __init__(self, project_path: Optional[str] = None):
-        self.project_path = project_path or str(Path.cwd())
+        # Derive project path from __file__ so .env is found even if CWD is elsewhere
+        self.project_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) or str(Path.cwd())
         self.logger = logging.getLogger("HCR-MCP")
+        
+        # Load .env file from project root to ensure LLM API keys are available
+        env_file = Path(self.project_path) / ".env"
+        if env_file.exists():
+            load_dotenv(dotenv_path=str(env_file), override=True)
+            self.logger.info(f"Loaded .env from {env_file}")
+        else:
+            # Fallback to CWD .env
+            load_dotenv(override=True)
         
         # Rate limiting: max 30 calls per minute per tool
         self._rate_limits: Dict[str, List[float]] = {}
@@ -157,7 +174,20 @@ class HCRMCPResponder:
             self.persistence = DevStatePersistence(self.project_path)
             self.security = EnterpriseSecurityManager()
         except Exception as e:
-            self.logger.error(f"Failed to initialize HCR modules: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            self.logger.error(f"Failed to initialize HCR modules: {e}\n{tb}")
+
+            # Persist the init error so IDEs can read it even if stdout is hidden
+            try:
+                project_root = Path(self.project_path or Path.cwd())
+                hcr_dir = project_root / ".hcr"
+                hcr_dir.mkdir(exist_ok=True)
+                error_file = hcr_dir / "mcp_server_init_errors.log"
+                with open(error_file, "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.now().isoformat()}] {e}\n{tb}\n")
+            except Exception as log_exc:
+                self.logger.warning(f"Failed to persist MCP init error: {log_exc}")
             self.engine = None
             self.cross_project = None
             self.persistence = None
@@ -224,34 +254,10 @@ class HCRMCPResponder:
         """Auto-start daemon if not already running - ensures background tracking"""
         try:
             from product.daemon.hcr_daemon import HCRDaemon
-            daemon = HCRDaemon(self.project_path)
-            
-            if not daemon.is_already_running():
-                import subprocess
-                import sys
-                popen_kwargs = {
-                    "stdout": subprocess.DEVNULL,
-                    "stderr": subprocess.DEVNULL,
-                }
-                if sys.platform == "win32":
-                    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    if creationflags:
-                        popen_kwargs["creationflags"] = creationflags
-                else:
-                    popen_kwargs["start_new_session"] = True
-                try:
-                    subprocess.Popen(
-                        [sys.executable, "-m", "product.daemon.hcr_daemon", "start", "--project", self.project_path],
-                        **popen_kwargs
-                    )
-                except OSError:
-                    popen_kwargs.pop("creationflags", None)
-                    popen_kwargs.pop("start_new_session", None)
-                    subprocess.Popen(
-                        [sys.executable, "-m", "product.daemon.hcr_daemon", "start", "--project", self.project_path],
-                        **popen_kwargs
-                    )
-                self.logger.info("Auto-started HCR daemon for background tracking")
+            # Pass the responder's engine so the daemon persists tool-call state changes,
+            # instead of using a separate engine whose state never updates.
+            daemon = HCRDaemon(self.project_path, engine=self.engine)
+            daemon.start()
         except Exception as e:
             self.logger.warning(f"Could not auto-start daemon: {e}")
             # Continue without daemon - engine will still work
@@ -1044,6 +1050,162 @@ class HCRMCPResponder:
                 }
             }
 
+    def _format_structured_result(self, result: Dict[str, Any]) -> str:
+        """Intelligently format structured tool output into human-readable markdown.
+
+        Handles common tool response shapes: graph, task, state, sessions,
+        operators, recommendations, version history, etc.
+        """
+        parts: list[str] = []
+
+        # --- Graph output ---
+        if "graph" in result:
+            g = result["graph"]
+            parts.append("## Causal Dependency Graph")
+            forward = g.get("forward", {})
+            if forward:
+                parts.append("\n### Forward Dependencies")
+                for src, deps in forward.items():
+                    parts.append(f"- **{src}** → {', '.join(deps)}")
+            else:
+                parts.append("\nNo forward dependencies recorded.")
+            reverse = g.get("reverse", {})
+            if reverse:
+                parts.append("\n### Reverse Dependencies")
+                for tgt, srcs in reverse.items():
+                    parts.append(f"- **{tgt}** ← {', '.join(srcs)}")
+            parts.append(f"\n*Total forward edges: {len(forward)} | reverse edges: {len(reverse)}*")
+            return "\n".join(parts)
+
+        # --- Task output ---
+        if "task" in result:
+            parts.append(f"## Current Task: {result.get('task', 'Unknown')}")
+            if "progress_percent" in result:
+                bar = "█" * int(result["progress_percent"] / 5) + "░" * (20 - int(result["progress_percent"] / 5))
+                parts.append(f"\nProgress: [{bar}] {result['progress_percent']}%")
+            return "\n".join(parts)
+
+        # --- Next action output ---
+        if "next_action" in result:
+            parts.append(f"## Recommended Next Action\n\n{result.get('next_action', 'Unknown')}")
+            if "confidence" in result:
+                conf = result["confidence"]
+                if isinstance(conf, float):
+                    parts.append(f"\nConfidence: {conf:.0%}")
+                else:
+                    parts.append(f"\nConfidence: {conf}")
+            return "\n".join(parts)
+
+        # --- Sessions list ---
+        if "sessions" in result:
+            sessions = result.get("sessions", [])
+            parts.append(f"## Active HCR Sessions ({len(sessions)})\n")
+            for s in sessions:
+                sid = s.get("session_id", "unknown")
+                tag = s.get("tag", "untitled")
+                last = s.get("last_active", "?")
+                notes = s.get("notes_count", 0)
+                preview = s.get("preview", "")
+                parts.append(f"- **{sid}** ({tag})")
+                parts.append(f"  Last active: {last} | Notes: {notes}")
+                if preview:
+                    parts.append(f"  Preview: {preview}")
+                parts.append("")
+            return "\n".join(parts)
+
+        # --- Operators / learned patterns ---
+        if "operators" in result:
+            ops = result.get("operators", [])
+            parts.append(f"## Learned Operators ({len(ops)})\n")
+            if ops:
+                for i, op in enumerate(ops[:20], 1):
+                    parts.append(f"{i}. `{op}`")
+            else:
+                parts.append("No operators learned yet.")
+            return "\n".join(parts)
+
+        # --- Recommendations ---
+        if "recommendations" in result:
+            recs = result.get("recommendations", [])
+            parts.append(f"## AI Recommendations ({len(recs)})\n")
+            for r in recs:
+                action = r.get("action", "?")
+                conf = r.get("confidence", 0.0)
+                if isinstance(conf, float):
+                    parts.append(f"- **{action}** (confidence: {conf:.0%})")
+                else:
+                    parts.append(f"- **{action}** (confidence: {conf})")
+            return "\n".join(parts)
+
+        # --- Version history ---
+        if "versions" in result:
+            versions = result.get("versions", [])
+            parts.append(f"## Version History ({len(versions)})\n")
+            for v in versions[:20]:
+                ts = v.get("timestamp", v.get("created", "?"))
+                msg = v.get("message", "no message")
+                author = v.get("author", "?")
+                parts.append(f"- `{ts}` — {msg} ({author})")
+            return "\n".join(parts)
+
+        # --- Shared states ---
+        if "shared_states" in result:
+            states = result.get("shared_states", [])
+            parts.append(f"## Shared States ({len(states)})\n")
+            if states:
+                for k in states:
+                    parts.append(f"- `{k}`")
+            else:
+                parts.append("No shared states.")
+            return "\n".join(parts)
+
+        # --- Impact analysis ---
+        if "impacted_files" in result:
+            files = result.get("impacted_files", [])
+            parts.append(f"## Impact Analysis\n\n**{len(files)} file(s) potentially impacted:**\n")
+            for f in files[:20]:
+                parts.append(f"- `{f}`")
+            return "\n".join(parts)
+
+        # --- Shared state key-value ---
+        if "key" in result and "value" in result:
+            parts.append(f"## Shared State: `{result.get('key')}`")
+            val = result.get("value")
+            parts.append(f"Value: `{str(val)[:200]}`")
+            if len(str(val)) > 200:
+                parts.append("*(truncated)*")
+            return "\n".join(parts)
+
+        # --- System health / status ---
+        if "status" in result or "error" in result:
+            status = result.get("status", "unknown")
+            error = result.get("error", "")
+            if error:
+                parts.append(f"## Status: {status}\n\n⚠️ {error}")
+            else:
+                parts.append(f"## Status: {status}")
+                for k, v in result.items():
+                    if k not in ("status", "error"):
+                        parts.append(f"- **{k}**: {v}")
+            return "\n".join(parts)
+
+        # --- Generic error state ---
+        if result.get("isError"):
+            err = result.get("error", "Unknown error")
+            return f"❌ Error: {err}"
+
+        # --- Success confirmation ---
+        if result.get("success") is True:
+            msg = result.get("message", result.get("content", "Operation completed successfully."))
+            return f"✅ {msg}"
+        if result.get("success") is False:
+            err = result.get("error", result.get("message", "Operation failed."))
+            return f"❌ {err}"
+
+        # --- Fallback: clean JSON ---
+        import json
+        return json.dumps(result, indent=2, default=str)
+
     async def _normalize_tool_result(
         self, result: Any, session_id: Optional[str] = None, tool_name: Optional[str] = ""
     ) -> Dict[str, Any]:
@@ -1116,8 +1278,11 @@ class HCRMCPResponder:
                     }
                 }
         else:
-            # No content field: use synthesized text or raw JSON
-            text_content = synthesized_text if synthesized_text is not None else json.dumps(result, indent=2, default=str)
+            # No content field: intelligently format structured data
+            if synthesized_text is not None:
+                text_content = synthesized_text
+            else:
+                text_content = self._format_structured_result(result)
             return {
                 "result": {
                     "content": [{"type": "text", "text": text_content}],
@@ -1360,7 +1525,6 @@ class HCRMCPResponder:
             else:
                 content += f"- **{e.event_type}:** {e.source}\n"
         
-        # Also return raw data for programmatic use
         activities = [
             {
                 "type": e.event_type,
@@ -1371,6 +1535,23 @@ class HCRMCPResponder:
             for e in events
         ]
         
+        suggested_actions = []
+        file_edits = [a for a in activities if a["type"] == "file_edit"]
+        if file_edits:
+            last_edit = file_edits[0]
+            suggested_actions.append({"action": f"Continue editing {last_edit['source']}", "description": last_edit['details'].get('change_summary', 'recent changes')})
+        
+        tool_calls = [a for a in activities if a["type"] == "mcp_tool_call"]
+        if tool_calls:
+            last_tool = tool_calls[0]
+            suggested_actions.append({"action": f"Continue using tool `{last_tool['source']}`", "description": last_tool['details'].get('args', '')})
+        
+        if suggested_actions:
+            content += f"\n\n**Suggested Actions:**\n"
+            for action in suggested_actions:
+                content += f"- **{action['action']}**: {action['description']}\n"
+        
+        # Also return raw data for programmatic use
         snapshot_meta = {"count": len(activities)}
         self._record_session_snapshot(session_id, content, snapshot_meta)
         return {"content": content, "activities": activities, "count": len(activities)}
@@ -1451,51 +1632,65 @@ class HCRMCPResponder:
     async def _tool_list_shared_states(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List shared states with caching."""
         if not self.cross_project:
-            return {"shared_states": [], "count": 0}
+            return {"content": "No cross-project manager available.", "shared_states": [], "count": 0}
         
         # k2.6 FIX: Use asyncio lock for thread-safe cache access
         async with self._cache_locks['shared_keys']:
             if self._cache_valid(self._shared_keys_cache_ts) and self._shared_keys_cache is not None:
-                return {"shared_states": self._shared_keys_cache, "count": len(self._shared_keys_cache), "cached": True}
+                keys = self._shared_keys_cache
+                content = f"## Shared States ({len(keys)})\n\n"
+                if keys:
+                    for k in keys:
+                        content += f"- `{k}`\n"
+                else:
+                    content += "No shared states.\n"
+                return {"content": content, "shared_states": keys, "count": len(keys), "cached": True}
         
         try:
             keys = await self._run_blocking(self.cross_project.list_shared_keys, timeout=5.0)
             async with self._cache_locks['shared_keys']:
                 self._shared_keys_cache = keys
                 self._shared_keys_cache_ts = time.time()
-            return {"shared_states": keys, "count": len(keys), "cached": False}
+            content = f"## Shared States ({len(keys)})\n\n"
+            if keys:
+                for k in keys:
+                    content += f"- `{k}`\n"
+            else:
+                content += "No shared states.\n"
+            return {"content": content, "shared_states": keys, "count": len(keys), "cached": False}
         except Exception as e:
             self.logger.warning(f"List shared states failed: {e}")
-            return {"error": str(e), "shared_states": [], "count": 0}
+            return {"content": f"Error listing shared states: {e}", "error": str(e), "shared_states": [], "count": 0}
     
     async def _tool_get_shared_state(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get shared state with async I/O."""
+        """Get a shared state value."""
         if not self.cross_project:
-            return {"error": "Cross-project manager not initialized", "exists": False}
+            return {"content": "Cross-project state manager not available.", "error": "Cross-project state manager not available", "exists": False}
         
-        key = args.get("key")
+        key = args.get("key", "")
+        if not key:
+            return {"content": "`key` parameter is required.", "error": "key is required", "exists": False}
         
         try:
-            value = await self._run_blocking(
-                lambda: self.cross_project.get_shared_state_value(key),
-                timeout=5.0
-            )
-            
-            if value is None:
-                return {"error": f"Shared state '{key}' not found", "exists": False}
-            
-            return {"key": key, "value": value, "exists": True}
+            value = await self._run_blocking(lambda: self.cross_project.get_shared_state(key), timeout=3.0)
+            val_str = str(value)[:200] if value is not None else "None"
+            content = f"## Shared State: `{key}`\n\nValue: `{val_str}`"
+            if value is not None and len(str(value)) > 200:
+                content += "\n*(truncated)*"
+            return {"content": content, "key": key, "value": value, "exists": value is not None}
         except Exception as e:
             self.logger.warning(f"Get shared state failed: {e}")
-            return {"error": str(e), "exists": False}
+            return {"content": f"Error getting shared state `{key}`: {e}", "error": str(e), "exists": False}
     
     async def _tool_share_state(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Share state with cache invalidation."""
         if not self.cross_project:
-            return {"error": "Cross-project manager not initialized", "success": False}
+            return {"content": "Cross-project manager not initialized.", "error": "Cross-project manager not initialized", "success": False}
         
         key = args.get("key")
         value = args.get("value")
+        if not key or value is None:
+            return {"content": "`key` and `value` parameters are required.", "error": "key and value are required", "success": False}
         
         try:
             project_id = await self._run_blocking(
@@ -1514,15 +1709,15 @@ class HCRMCPResponder:
                     self._shared_keys_cache = None
                     self._shared_keys_cache_ts = 0.0
             
-            return {"success": success, "key": key}
+            return {"content": f"Shared state saved: `{key}`", "success": success, "key": key}
         except Exception as e:
             self.logger.warning(f"Share state failed: {e}")
-            return {"error": str(e), "success": False}
+            return {"content": f"Error sharing state `{key}`: {e}", "error": str(e), "success": False}
     
     async def _tool_get_version_history(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get version history using DevStatePersistence with caching."""
         if not self.persistence:
-            return {"error": "Persistence not initialized", "versions": []}
+            return {"content": "Persistence not initialized.", "error": "Persistence not initialized", "versions": []}
         
         limit = args.get("limit", 20)
         
@@ -1530,7 +1725,13 @@ class HCRMCPResponder:
         async with self._cache_locks['version']:
             if self._cache_valid(self._version_cache_ts) and self._version_cache is not None:
                 versions = self._version_cache[-limit:]
-                return {"versions": versions, "count": len(versions), "cached": True}
+                content = f"## Version History ({len(versions)})\n\n"
+                for v in versions[:20]:
+                    ts = v.get("timestamp", v.get("created", "?"))
+                    msg = v.get("message", "no message")
+                    author = v.get("author", "?")
+                    content += f"- `{ts}` — {msg} ({author})\n"
+                return {"content": content, "versions": versions, "count": len(versions), "cached": True}
         
         try:
             # FIXED: Reduced from 10.0 to 5.0
@@ -1550,15 +1751,21 @@ class HCRMCPResponder:
             async with self._cache_locks['version']:
                 self._version_cache = versions
                 self._version_cache_ts = time.time()
-            return {"versions": versions, "count": len(versions), "cached": False}
+            content = f"## Version History ({len(versions)})\n\n"
+            for v in versions[:20]:
+                ts = v.get("timestamp", v.get("created", "?"))
+                msg = v.get("message", "no message")
+                author = v.get("author", "?")
+                content += f"- `{ts}` — {msg} ({author})\n"
+            return {"content": content, "versions": versions, "count": len(versions), "cached": False}
         except Exception as e:
             self.logger.warning(f"Version history fetch failed: {e}")
-            return {"error": str(e), "versions": [], "count": 0}
+            return {"content": f"Version history fetch failed: {e}", "error": str(e), "versions": [], "count": 0}
     
     async def _tool_restore_version(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Restore version - replays events up to specific point in history"""
         if not self.engine:
-            return {"error": "Engine not initialized", "success": False}
+            return {"content": "Engine not initialized.", "error": "Engine not initialized", "success": False}
 
         version_hash = args.get("version_hash")
 
@@ -1571,7 +1778,7 @@ class HCRMCPResponder:
                 break
 
         if target_idx is None:
-            return {"error": f"Version '{version_hash}' not found", "success": False}
+            return {"content": f"Version '{version_hash}' not found.", "error": f"Version '{version_hash}' not found", "success": False}
 
         # Replay events in thread pool with timeout
         try:
@@ -1625,7 +1832,14 @@ The cognitive state has been reset and replayed up to this point in history.
         # k2.6 FIX: Use asyncio lock for thread-safe cache access
         async with self._cache_locks['learned_ops']:
             if self._cache_valid(self._learned_ops_cache_ts) and self._learned_ops_cache is not None:
-                return {"operators": self._learned_ops_cache, "count": len(self._learned_ops_cache), "cached": True}
+                ops = self._learned_ops_cache
+                content = f"## Learned Operators ({len(ops)})\n\n"
+                if ops:
+                    for i, op in enumerate(ops[:20], 1):
+                        content += f"{i}. `{op}`\n"
+                else:
+                    content += "No operators learned yet.\n"
+                return {"content": content, "operators": ops, "count": len(ops), "cached": True}
         
         try:
             # Get operator list asynchronously (fast)
@@ -1651,15 +1865,21 @@ The cognitive state has been reset and replayed up to this point in history.
             async with self._cache_locks['learned_ops']:
                 self._learned_ops_cache = operator_data
                 self._learned_ops_cache_ts = time.time()
-            return {"operators": operator_data, "count": len(operator_data), "cached": False}
+            content = f"## Learned Operators ({len(operator_data)})\n\n"
+            if operator_data:
+                for i, op in enumerate(operator_data[:20], 1):
+                    content += f"{i}. `{op}`\n"
+            else:
+                content += "No operators learned yet.\n"
+            return {"content": content, "operators": operator_data, "count": len(operator_data), "cached": False}
         except Exception as e:
             self.logger.warning(f"Learned operators fetch failed: {e}")
-            return {"error": str(e), "operators": [], "count": 0}
+            return {"content": f"## Learned Operators\n\n⚠️ Fetch failed: {e}", "error": str(e), "operators": [], "count": 0}
     
     async def _tool_get_system_health(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Get system health with caching and async metrics gathering."""
         if not self.engine:
-            return {"status": "unhealthy", "error": "Engine not initialized"}
+            return {"content": "## System Health\n\n⚠️ Engine not initialized.", "status": "unhealthy", "error": "Engine not initialized", "metrics": {}}
         
         # k2.6 FIX: Use asyncio lock for thread-safe cache access
         async with self._cache_locks['health']:
@@ -1667,6 +1887,17 @@ The cognitive state has been reset and replayed up to this point in history.
                 cached = self._health_cache.copy()
                 cached["cached"] = True
                 cached["timestamp"] = datetime.now().isoformat()
+                # Ensure content exists for display normalization
+                if "content" not in cached:
+                    metrics = cached.get("metrics", {})
+                    comp = cached.get("components", {})
+                    content = f"## System Health (cached)\n\n**Status:** {cached.get('status', 'unknown')}\n\n**Components:**\n"
+                    for k, v in comp.items():
+                        content += f"- {k}: {v}\n"
+                    content += "\n**Metrics:**\n"
+                    for k, v in metrics.items():
+                        content += f"- {k}: {v}\n"
+                    cached["content"] = content
                 return cached
         
         try:
@@ -1701,6 +1932,16 @@ The cognitive state has been reset and replayed up to this point in history.
             
             # FAST: Reduced to 2.0s - this is a simple status check
             health = await self._run_blocking(_gather_health, timeout=2.0)
+            # Build human-readable content for normalization layer
+            metrics = health.get("metrics", {})
+            comp = health.get("components", {})
+            content = "## System Health\n\n**Status:** Healthy\n\n**Components:**\n"
+            for k, v in comp.items():
+                content += f"- {k}: {v}\n"
+            content += "\n**Metrics:**\n"
+            for k, v in metrics.items():
+                content += f"- {k}: {v}\n"
+            health["content"] = content
             async with self._cache_locks['health']:
                 self._health_cache = health
                 self._health_cache_ts = time.time()
@@ -1708,7 +1949,7 @@ The cognitive state has been reset and replayed up to this point in history.
             return health
         except Exception as e:
             self.logger.warning(f"Health check failed: {e}")
-            return {"status": "degraded", "error": str(e), "timestamp": datetime.now().isoformat()}
+            return {"content": f"## System Health\n\n⚠️ Health check failed: {e}", "status": "unhealthy", "error": str(e), "metrics": {}}
     
     async def _tool_list_sessions(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """List all active HCR sessions (context windows)"""
@@ -1940,6 +2181,12 @@ The cognitive state has been reset and replayed up to this point in history.
         # Update engine state
         self.engine.update_from_environment(event)
         
+        # Persist immediately so task inference and activity tracking stay current
+        try:
+            self.engine.save_state()
+        except Exception:
+            pass  # Non-fatal: daemon will eventually save
+        
         # Build response
         content = f"## File Edit Recorded\n\n"
         content += f"**File:** `{filepath}`\n"
@@ -2125,6 +2372,13 @@ The cognitive state has been reset and replayed up to this point in history.
         }
         
         self._record_session_snapshot(session_id, content, {"full_context": True})
+        
+        # Persist state so task inference and recent activity stay current
+        try:
+            self.engine.save_state()
+        except Exception:
+            pass
+        
         return result
     
     async def _tool_analyze_impact(self, args: Dict[str, Any]) -> Dict[str, Any]:

@@ -19,30 +19,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from src.config import load_config
 
 class HCRDaemon:
-    def __init__(self, project_path: str):
+    """HCR Daemon for background context extraction."""
+
+    def __init__(self, project_path: str, engine=None):
         self.project_path = Path(project_path).absolute()
-        self.config = load_config(str(self.project_path))
-        
         self.hcr_dir = self.project_path / ".hcr"
         self.hcr_dir.mkdir(exist_ok=True)
         
-        self.pid_file = self.hcr_dir / "daemon.pid"
         self.log_file = self.hcr_dir / "daemon.log"
-        
-        self._setup_logging()
-        self.services = []
+        self.pid_file = self.hcr_dir / "daemon.pid"
         self.is_running = False
-
-    def _setup_logging(self):
+        self._external_engine = engine  # optional shared engine from responder
+        
+        # Setup logging
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(self.log_file),
-                logging.StreamHandler(sys.stderr)
+                logging.FileHandler(str(self.project_path / ".hcr" / "daemon.log")),
+                logging.StreamHandler()
             ]
         )
-        self.logger = logging.getLogger("HCRDaemon")
+        self.logger = logging.getLogger("HCR-Daemon")
 
     def is_already_running(self) -> bool:
         if not self.pid_file.exists():
@@ -50,10 +48,26 @@ class HCRDaemon:
         
         try:
             pid = int(self.pid_file.read_text().strip())
-            # Check if process exists
-            os.kill(pid, 0)
-            return True
-        except (ValueError, ProcessLookupError, PermissionError, OSError):
+            # Windows: os.kill(pid, 0) raises OSError for stale PIDs
+            # Use psutil if available for cross-platform process checking
+            try:
+                import psutil
+                return psutil.pid_exists(pid)
+            except ImportError:
+                # Fallback: try to open process (Windows-specific via ctypes)
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                handle = kernel32.OpenProcess(1, False, pid)
+                if handle:
+                    kernel32.CloseHandle(handle)
+                    return True
+                return False
+        except (ValueError, OSError, Exception):
+            # Stale PID file - clean it up
+            try:
+                self.pid_file.unlink(missing_ok=True)
+            except:
+                pass
             return False
 
     def start(self):
@@ -68,12 +82,22 @@ class HCRDaemon:
         self.logger.info(f"HCR Daemon started (PID: {pid}) for project: {self.project_path}")
         self.is_running = True
         
-        # Setup signal handlers
-        signal.signal(signal.SIGTERM, self._handle_exit)
-        signal.signal(signal.SIGINT, self._handle_exit)
+        # Setup signal handlers - only in main thread (Windows restriction)
+        import threading
+        if threading.current_thread() is threading.main_thread():
+            try:
+                signal.signal(signal.SIGTERM, self._handle_exit)
+                signal.signal(signal.SIGINT, self._handle_exit)
+            except (ValueError, OSError):
+                pass  # Not main thread or Windows limitation
 
         try:
             self._run_main_loop()
+        except Exception as e:
+            self.logger.error(f"Daemon crashed: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            raise
         finally:
             self._cleanup()
 
@@ -154,9 +178,12 @@ class HCRDaemon:
         from .file_watcher_service import FileWatcherService
         from src.engine_api import HCREngine
         
-        # Initialize HCREngine directly (no HTTP needed)
-        self.logger.info("Initializing HCREngine...")
-        engine = HCREngine(str(self.project_path), self.config)
+        # Use external engine if provided (from responder) so state changes
+        # from tool calls are visible to the daemon and persisted.
+        engine = self._external_engine
+        if engine is None:
+            self.logger.info("Initializing HCREngine...")
+            engine = HCREngine(str(self.project_path), self.config)
         
         # Load existing state if available
         if engine.state_exists():
@@ -171,19 +198,23 @@ class HCRDaemon:
         try:
             watcher.start()
             self.services.append(watcher)
-            
-            self.logger.info("=" * 60)
-            self.logger.info("HCR Daemon is FULLY ACTIVE")
-            self.logger.info("Watching for file changes with diff tracking...")
-            self.logger.info("=" * 60)
-            
+            self.logger.info("File watcher started successfully")
+        except Exception as e:
+            self.logger.warning(f"File watcher failed to start: {e}")
+            self.logger.warning("Daemon will continue without file watching - state saved via tool calls")
+        
+        self.logger.info("=" * 60)
+        self.logger.info("HCR Daemon is FULLY ACTIVE")
+        self.logger.info("Watching for file changes with diff tracking...")
+        self.logger.info("=" * 60)
+        
+        try:
             while self.is_running:
                 # Periodic state save (every 30 seconds)
                 time.sleep(30)
                 if engine._current_state:
                     engine.save_state()
                     self.logger.debug("Auto-saved cognitive state")
-                    
         finally:
             watcher.stop()
             # Final state save

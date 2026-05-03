@@ -155,6 +155,49 @@ HCO = update(HCO, feedback)
 
 ## Current Status
 
+### [DONE] AI IDE Global Rules Integration (2026-05-02)
+Integrated comprehensive HCR MCP tool usage rules into Windsurf global rules for AI IDEs.
+
+**Changes:**
+- Added PART 4: HCR MCP Tool-Specific Rules to `c:\Users\rishi\.codeium\windsurf\memories\global_rules.md`
+- Updated heading to "RISHI'S HCR & MEMORY PROTOCOL"
+- Included all 21 MCP tools with:
+  - When to call
+  - Parameters with defaults
+  - Timeout values
+
+### [DONE] Commercial-Grade Daemon & Response Fixes (2026-05-03)
+Fixed daemon crashes, raw JSON responses, and real-time state persistence for production-grade reliability.
+
+**Changes:**
+- Fixed orphaned `finally:` syntax error in `hcr_daemon.py` that prevented any daemon startup
+- Made daemon survive `watchdog` failures on Windows with fallback periodic auto-save
+- Implemented shared engine architecture: responder passes its engine to daemon for unified state
+- Added `engine.save_state()` calls in `hcr_record_file_edit` and `hcr_capture_full_context`
+- Built `_format_structured_result` with 12+ formatters for graph, task, sessions, operators, recommendations, versions, impact, shared states, status/error, and success confirmations
+- Eliminated raw JSON "broken no sense data" from all 21 tool outputs
+- Updated `tasks.md`, `dev_log.md`, and `project_memory.md` with current status
+  - Cache durations
+  - Priority levels
+- Added conversation start workflow with fallback logic
+- Added file edit workflow (critical step after every edit)
+- Tool usage principles: state-first, non-blocking, session-aware, incremental, cache-aware, HCR-priority
+
+**Purpose:** Enables AI IDEs (Windsurf/Cascade, Claude Desktop, Cursor) to use HCR tools correctly with robust fallback mechanisms.
+
+### [DONE] GitHub OAuth Implementation (2026-05-01)
+Implemented complete GitHub OAuth flow for web UI authentication.
+
+**Components:**
+- `web/web-ui/src/pages/Auth.jsx` - OAuth redirect logic with state validation
+- `web/web-ui/src/pages/GitHubCallback.jsx` - Callback handler with status UI
+- `web/web-ui/server/githubAuthProxy.js` - Express micro-service for secure token exchange
+- `web/web-ui/.env` - Vite-specific environment variables for client
+- Updated `package.json` - Added express, node-fetch, dotenv, concurrently
+- Updated `vite.config.js` - Proxy configuration for `/api/auth/*`
+
+**Security:** Client secret kept server-side via proxy, redirect URI configured in GitHub OAuth settings.
+
 ### [DONE] Professional Code Review (2026-04-28)
 Comprehensive audit complete - **Grade: B+**
 
@@ -185,7 +228,35 @@ Comprehensive audit complete - **Grade: B+**
 - Replaced "Literary Tech" grainy textures with high-performance dark mode (`#0A0A0A`) and crisp glass panels.
 - Authoritative "System Pulse" Dashboard with ReactFlow causal console.
 
-## Market Research Findings (April 2026)
+### Latest Design Decisions (May 3, 2026)
+
+#### Daemon Architecture
+- **Platform-specific signal handling**: daemon uses conditional signal handlers for Linux only
+- **Windows robustness**: uses ctypes / psutil for PID verification to avoid false stale-PID positives
+- **Shared engine model**: MCP responder passes its engine instance to the daemon, so state changes from tool calls are visible to the background file watcher
+- **Crash logging**: full exception traceback on startup failure to prevent silent exits
+- **File watcher resilience**: daemon survives `watchdog` failures on Windows and falls back to periodic state-save mode
+- **Periodic auto-save**: 30-second state save loop ensures no data loss even if file watcher is unavailable
+
+#### MCP Server Robustness (Commercial-Grade)
+- **Async thread pool**: 16 workers to avoid thread starvation
+- **Circuit breakers**: per-service circuit breakers prevent cascading failures
+- **Request tracing**: unique request IDs with start/end timing for observability
+- **Universal response normalization**: `_normalize_tool_result` guarantees every tool returns human-readable markdown via `_format_structured_result`, eliminating "broken no sense data" from raw JSON dumps
+- **Structured data formatting**: graph, sessions, operators, recommendations, version history, impact analysis, and health status all render as clean markdown tables/bullets
+- **Synthesis gate**: `USE_HCR_SYNTHESIS` env var controls whether Groq-powered output synthesis is active (default `true`)
+
+### Known Issues (Updated May 3, 2026 — All Critical Issues Resolved)
+- **[FIXED]** Daemon syntax error (orphaned `finally:` block) — daemon now starts correctly and stays alive.
+- **[FIXED]** Raw JSON "broken no sense data" responses — `_format_structured_result` now converts all structured dicts to clean markdown.
+- **[FIXED]** Stale state when daemon not running — tool handlers now call `engine.save_state()` after file edits and context capture.
+- **[FIXED]** PID file stale detection on Windows — uses ctypes / psutil for robust process verification.
+- **[FIXED]** File watcher crash on Windows — daemon survives `watchdog` failures and falls back to periodic auto-save.
+- **[FIXED]** Daemon and responder engine isolation — shared engine architecture ensures tool-call state changes are visible to the background loop.
+- Session data not persisted across restarts: private notes are in-memory only (session state is saved via merge tool). [LOW PRIORITY]
+- LLM synthesis depends on Groq API key availability; falls back to fast local formatting if key missing. [EXPECTED BEHAVIOR]
+
+### Market Research Findings (April 2026)
 
 ### Competitive Landscape
 - **Cursor AI**: $2B ARR, fastest autocomplete, background agents, but no persistent state
@@ -339,7 +410,7 @@ hcr dashboard   # Opens browser automatically
 **File**: `product/integrations/mcp_server.py`
 
 **Features Implemented**:
-- **12 MCP Tools**: hcr_get_state, hcr_get_causal_graph, hcr_get_current_task, hcr_get_next_action, hcr_share_state, hcr_get_version_history, hcr_restore_version, hcr_get_learned_operators, hcr_get_system_health, etc.
+- **21 MCP Tools**: hcr_get_state, hcr_get_causal_graph, hcr_get_current_task, hcr_get_next_action, hcr_share_state, hcr_get_version_history, hcr_restore_version, hcr_get_learned_operators, hcr_get_system_health, etc.
 - **3 MCP Resources**: hcr://state/current, hcr://causal-graph/main, hcr://task/current
 - **2 MCP Prompts**: hcr_resume_session, hcr_context_aware_coding
 - **Dual Transport**: Stdio (for Claude/Cursor/Windsurf) + HTTP (for web)

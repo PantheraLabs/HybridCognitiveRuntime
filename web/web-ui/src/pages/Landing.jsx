@@ -285,9 +285,9 @@ export default function Landing() {
               <span className="relative z-10">Launch Console</span>
               <div className="absolute inset-0 bg-gradient-to-r from-blue-100 to-white opacity-0 group-hover:opacity-100 transition-opacity" />
             </Link>
-            <a href="#onboarding" className="px-8 py-4 bg-zinc-900 text-white font-semibold rounded-xl border border-white/10 hover:bg-zinc-800 transition-all">
-              See how it works
-            </a>
+            <Link to="/onboarding" className="px-8 py-4 bg-zinc-900 text-white font-semibold rounded-xl border border-white/10 hover:bg-zinc-800 transition-all">
+              Guided onboarding
+            </Link>
           </div>
         </motion.div>
       </section>
@@ -305,6 +305,11 @@ export default function Landing() {
       <div id="onboarding" className="relative">
         <GlowingFlowLine />
         <InteractiveOnboarding />
+        <div className="text-center pb-24">
+          <Link to="/onboarding" className="inline-flex items-center gap-2 px-6 py-3 border border-white/10 rounded-2xl text-sm uppercase tracking-[0.3em] text-zinc-400 hover:bg-white/5">
+            Full onboarding page ↗
+          </Link>
+        </div>
       </div>
 
       <FeatureGrid />

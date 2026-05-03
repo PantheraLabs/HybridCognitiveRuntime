@@ -110,7 +110,24 @@ class GetCausalGraphTool(BaseMCPTool):
             "reverse": {k: list(v) for k, v in engine.dependency_graph.reverse_edges.items()}
         }
         
-        return {"graph": graph, "exists": True}
+        # Build human-readable content string
+        parts = ["## Causal Dependency Graph\n"]
+        fwd = graph["forward"]
+        if fwd:
+            parts.append("### Forward Dependencies")
+            for src, deps in fwd.items():
+                parts.append(f"- **{src}** → {', '.join(deps)}")
+        else:
+            parts.append("No forward dependencies recorded.")
+        rev = graph["reverse"]
+        if rev:
+            parts.append("\n### Reverse Dependencies")
+            for tgt, srcs in rev.items():
+                parts.append(f"- **{tgt}** ← {', '.join(srcs)}")
+        parts.append(f"\n*Total forward edges: {len(fwd)} | reverse edges: {len(rev)}*")
+        content = "\n".join(parts)
+        
+        return {"content": content, "graph": graph, "exists": True}
 
 
 class GetRecentActivityTool(BaseMCPTool):

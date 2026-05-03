@@ -365,29 +365,43 @@ Transform this into a professional markdown panel. Return ONLY JSON."""
     # ------------------------------------------------------------------
 
     def _get_llm(self):
-        """Lazy-load LLM provider — tries engine first, then direct HTTP fallback (no SDK needed)."""
+        """Lazy-load LLM provider — always use direct HTTP fallback for reliable JSON output."""
         if self._llm_provider:
             return self._llm_provider
         
-        # Try engine's provider first
-        if self.engine:
-            llm = getattr(self.engine, "_get_llm_provider", lambda: None)()
-            if llm:
-                self._llm_provider = llm
-                return llm
-        
-        # Direct HTTP fallback: no SDK, just requests + .env
+        # NOTE: Engine's GroqProvider does not set response_format for JSON output,
+        # causing structured_complete() to return None. Always use _DirectGroqProvider
+        # which handles response_format correctly.
+        # Direct HTTP fallback: no SDK, just urllib + .env
         try:
             import os
             from pathlib import Path
-            from dotenv import load_dotenv
             
-            project_path = Path(self.engine.project_path) if self.engine else Path.cwd()
-            env_file = project_path / ".env"
-            if env_file.exists():
-                load_dotenv(dotenv_path=str(env_file), override=True)
+            # Search multiple locations for .env
+            env_paths = []
+            if self.engine and hasattr(self.engine, "project_path"):
+                env_paths.append(Path(self.engine.project_path) / ".env")
+            # Derive repo root from this file's location
+            repo_root = Path(__file__).parent.parent.parent.parent
+            env_paths.append(repo_root / ".env")
+            env_paths.append(Path.cwd() / ".env")
             
             api_key = os.environ.get("GROQ_API_KEY", "") or os.environ.get("HCR_API_KEY", "")
+            
+            if not api_key:
+                for env_file in env_paths:
+                    if env_file.exists():
+                        try:
+                            with open(env_file, "r") as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if line.startswith("GROQ_API_KEY="):
+                                        api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                                        break
+                        except Exception:
+                            pass
+                        break
+            
             model = os.environ.get("HCR_LLM_MODEL", "llama-3.1-8b-instant")
             
             if not api_key:
@@ -417,43 +431,41 @@ Transform this into a professional markdown panel. Return ONLY JSON."""
 # ---------------------------------------------------------------------------
 
 class _DirectGroqProvider:
-    """Minimal Groq provider using raw requests. No groq SDK required."""
+    """Minimal Groq provider using urllib (stdlib). No groq SDK, no requests."""
 
     def __init__(self, api_key: str, model: str = "llama-3.1-8b-instant"):
         self.api_key = api_key
         self.model = model
-        self._http_session = None
-
-    def _get_session(self):
-        import requests
-        if self._http_session is None:
-            self._http_session = requests.Session()
-        return self._http_session
 
     def structured_complete(self, prompt: str, system: str = "", temperature: float = 0.15, max_tokens: int = 800):
-        import requests, json
+        import json, urllib.request
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        
-        resp = requests.post(
+
+        payload = json.dumps({
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
             "https://api.groq.com/openai/v1/chat/completions",
+            data=payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "HCR-MCP/1.0",
             },
-            json={
-                "model": self.model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=8,
+            method="POST",
         )
-        resp.raise_for_status()
-        data = resp.json()
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
         content = data["choices"][0]["message"]["content"]
         try:
             return json.loads(content)
