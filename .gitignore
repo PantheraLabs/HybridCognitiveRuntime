@@ -46,6 +46,7 @@ pnpm-lock.yaml
 
 # Testing
 .pytest_cache/
+pytest-cache-files-*/
 .coverage
 htmlcov/
 *.cover
